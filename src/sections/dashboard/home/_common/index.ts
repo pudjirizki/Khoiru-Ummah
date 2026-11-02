@@ -1,0 +1,10 @@
+export { default as StudentProfile } from './student-profile';
+export { default as TotalStudent } from './total-student';
+export { default as TotalUser } from './total-user';
+export { default as ChartAssessment } from './chart-assessment';
+export { default as CardSkeleton } from './card-skeleton';
+export { default as Summary } from './summary';
+export { default as PendingAssessment } from './pending-assessment';
+export { default as TotalForm } from './total-form';
+export { default as StudentTable } from './student-table';
+export { default as HistoryAssessment } from './history-assessment';
