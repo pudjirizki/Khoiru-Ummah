@@ -1,12 +1,9 @@
 import React, { useMemo, useCallback, useEffect } from 'react';
-import { v4 as uuidv4 } from 'uuid';
-import { doc, updateDoc, serverTimestamp, setDoc, getDoc, getDocs, Timestamp, deleteDoc, collection, query, where, limit as fbLimit } from 'firebase/firestore';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, deleteUser as deleteAuthUser, onAuthStateChanged } from 'firebase/auth';
-import { getFunctions, httpsCallable } from 'firebase/functions';
+import { createClient, User as SupabaseUser } from '@supabase/supabase-js';
 // utils
 import { fEncrypt } from '/src/utils/format-encrypt';
-// firebase
-import { fbAuth, fbFirestore } from '/src/firebase';
+// supabase
+import { supabase } from '/src/lib/supabase';
 // hooks
 import { useLocalStorage } from '/src/hooks/use-local-storage';
 // config-global
@@ -52,18 +49,32 @@ const initialState: InitialState = {
   status: 'unauthenticated',
 };
 
-const mapUser = (data: any): UserInterface => ({
-  id: data.id,
-  authId: data.authId,
-  name: data.name,
-  nameLowercase: data.nameLowercase,
-  phoneNumber: data.phoneNumber,
-  role: data.role as RoleUserType,
-  email: data.email,
-  status: data.status,
-  createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(data.createdAt),
-  updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(data.updatedAt),
+// baris tabel (snake_case) -> UserInterface (camelCase)
+const mapUser = (row: any): UserInterface => ({
+  id: row.id,
+  authId: row.auth_id,
+  name: row.name,
+  nameLowercase: row.name_lowercase,
+  phoneNumber: row.phone_number,
+  role: row.role as RoleUserType,
+  email: row.email,
+  status: row.status,
+  createdAt: new Date(row.created_at),
+  updatedAt: new Date(row.updated_at),
 });
+
+// Supaya kode lain yang masih memakai user.uid tetap jalan
+const toLegacyUser = (u: SupabaseUser) => ({
+  ...u,
+  uid: u.id,
+  displayName: (u.user_metadata as any)?.name ?? null,
+});
+
+const translateError = (message: string) => {
+  if (message === 'Invalid login credentials') return 'Email atau password salah.';
+  if (message === 'User already registered') return 'Email sudah terdaftar';
+  return message;
+};
 
 const ACCESS_TOKEN_KEY = 'accessToken';
 
@@ -72,32 +83,25 @@ const ACCESS_TOKEN_KEY = 'accessToken';
 export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
   const { state, update, reset } = useLocalStorage(USER_KEY, initialState) as { state: InitialState; update: (name: string, updateValue: Value) => void; reset: () => void };
 
-  const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
+  const safeWrapError = (error: unknown) => {
+    if (error instanceof Error) return new Error(translateError(error.message));
+    if (error && typeof error === 'object' && 'message' in error) return new Error(translateError(String((error as any).message)));
+    return new Error(String(error));
+  };
 
   const cleanupAuthSession = useCallback(async () => {
     sessionStorage.removeItem(ACCESS_TOKEN_KEY);
-
-    if (fbAuth.currentUser) {
-      await signOut(fbAuth);
-    }
-
+    await supabase.auth.signOut();
     update('user', '');
     update('status', 'unauthenticated');
   }, [update]);
 
   const ensureActiveUser = useCallback(async (authId: string) => {
-    const usersCollectionRef = collection(fbFirestore, 'users');
-    const q = query(usersCollectionRef, where('authId', '==', authId), fbLimit(1));
-    const snap = await getDocs(q);
+    const { data, error } = await supabase.from('users').select('status').eq('auth_id', authId).limit(1).maybeSingle();
 
-    if (snap.empty) {
-      throw new Error('Akun tidak ditemukan di database.');
-    }
-
-    const data = snap.docs[0]?.data();
-    if (data?.status !== 'active') {
-      throw new Error('Akun Anda nonaktif. Silakan hubungi admin.');
-    }
+    if (error) throw error;
+    if (!data) throw new Error('Akun tidak ditemukan di database.');
+    if (data.status !== 'active') throw new Error('Akun Anda nonaktif. Silakan hubungi admin.');
   }, []);
 
   // ----------------------------------------------------------------------
@@ -105,30 +109,34 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
   useEffect(() => {
     update('isLoading', true);
 
-    const unsubscribe = onAuthStateChanged(fbAuth, async (user) => {
-      if (user) {
-        try {
-          await ensureActiveUser(user.uid);
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      // setTimeout: Supabase tidak menyarankan await query di dalam callback ini
+      setTimeout(async () => {
+        if (session?.user) {
+          try {
+            await ensureActiveUser(session.user.id);
 
-          const token = await user.getIdToken();
-          sessionStorage.setItem(ACCESS_TOKEN_KEY, token);
+            sessionStorage.setItem(ACCESS_TOKEN_KEY, session.access_token);
 
-          const encrypted = fEncrypt(user, USER_KEY);
-          update('user', encrypted);
-          update('status', 'authenticated');
-        } catch (error) {
-          await cleanupAuthSession();
+            const encrypted = fEncrypt(toLegacyUser(session.user), USER_KEY);
+            update('user', encrypted);
+            update('status', 'authenticated');
+          } catch (error) {
+            await cleanupAuthSession();
+          }
+        } else {
+          sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+          update('user', '');
+          update('status', 'unauthenticated');
         }
-      } else {
-        sessionStorage.removeItem(ACCESS_TOKEN_KEY);
-        update('user', '');
-        update('status', 'unauthenticated');
-      }
 
-      update('isLoading', false);
+        update('isLoading', false);
+      }, 0);
     });
 
-    return () => unsubscribe();
+    return () => subscription.unsubscribe();
   }, [cleanupAuthSession, ensureActiveUser, update]);
 
   // LOGIN EMAIL
@@ -137,18 +145,17 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
       try {
         update('isLoading', true);
 
-        const userCredential = await signInWithEmailAndPassword(fbAuth, email, password);
+        const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) throw error;
 
-        const { user } = userCredential;
+        const { user, session } = data;
 
-        if (user) {
-          await ensureActiveUser(user.uid);
+        if (user && session) {
+          await ensureActiveUser(user.id);
 
-          const accessToken = await user.getIdToken();
+          const encrypted = fEncrypt(toLegacyUser(user), USER_KEY);
 
-          const encrypted = fEncrypt(user, USER_KEY);
-
-          sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+          sessionStorage.setItem(ACCESS_TOKEN_KEY, session.access_token);
           update('user', encrypted);
           update('status', 'authenticated');
         }
@@ -162,96 +169,65 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
     [cleanupAuthSession, ensureActiveUser, update]
   );
 
-  // LOGIN & REGISTER GOOGLE
+  // LOGIN GOOGLE (Supabase memakai redirect, bukan popup)
   const onLoginGoogle = useCallback(async () => {
     try {
       update('isLoading', true);
 
-      const provider = new GoogleAuthProvider();
-
-      const userCredential = await signInWithPopup(fbAuth, provider);
-
-      const credential = GoogleAuthProvider.credentialFromResult(userCredential);
-
-      const { user } = userCredential;
-
-      if (user) {
-        await ensureActiveUser(user.uid);
-      }
-
-      if (credential) {
-        const { accessToken } = credential;
-
-        const encrypted = fEncrypt(user, USER_KEY);
-
-        sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken!);
-        update('user', encrypted);
-      }
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: window.location.origin },
+      });
+      if (error) throw error;
     } catch (error: any) {
       await cleanupAuthSession();
-      throw safeWrapError(error);
-    } finally {
       update('isLoading', false);
+      throw safeWrapError(error);
     }
-  }, [cleanupAuthSession, ensureActiveUser, update]);
+  }, [cleanupAuthSession, update]);
 
-  // REGISTER
+  // REGISTER (dilakukan oleh admin yang sedang login)
   const onRegister = useCallback(
     async (payload: PayloadRegisterAuthInterface) => {
       try {
         update('isLoading', true);
 
-        const sanitizedEmail = payload.email.trim();
-        const sanitizedPhoneNumber = payload.phoneNumber.trim();
+        const email = payload.email.trim();
+        const phoneNumber = payload.phoneNumber.trim();
 
-        const data: PayloadRegisterAuthInterface = {
-          name: payload.name,
-          nameLowercase: payload.name,
-          phoneNumber: sanitizedPhoneNumber,
-          role: payload.role,
-          email: sanitizedEmail,
-          password: payload.password,
-          status: payload.status,
-        };
+        const { data: dupEmail, error: e1 } = await supabase.from('users').select('id').eq('email', email).limit(1);
+        if (e1) throw e1;
+        if (dupEmail && dupEmail.length > 0) throw new Error('Email sudah terdaftar');
 
-        // eslint-disable-next-line no-unused-vars
-        const { password, ...dataFirestore } = data;
-
-        const usersCollectionRef = collection(fbFirestore, 'users');
-
-        const duplicateEmailQuery = query(usersCollectionRef, where('email', '==', data.email), fbLimit(1));
-        const duplicatePhoneQuery = data.phoneNumber ? query(usersCollectionRef, where('phoneNumber', '==', data.phoneNumber), fbLimit(1)) : null;
-
-        const [duplicateEmailSnapshot, duplicatePhoneSnapshot] = await Promise.all([getDocs(duplicateEmailQuery), duplicatePhoneQuery ? getDocs(duplicatePhoneQuery) : Promise.resolve(null)]);
-
-        if (!duplicateEmailSnapshot.empty) {
-          throw new Error('Email sudah terdaftar');
+        if (phoneNumber) {
+          const { data: dupPhone, error: e2 } = await supabase.from('users').select('id').eq('phone_number', phoneNumber).limit(1);
+          if (e2) throw e2;
+          if (dupPhone && dupPhone.length > 0) throw new Error('Nomor telepon sudah terdaftar');
         }
 
-        if (duplicatePhoneSnapshot && !duplicatePhoneSnapshot.empty) {
-          throw new Error('Nomor telepon sudah terdaftar');
-        }
-
-        const adminUser = fbAuth.currentUser;
-
-        const response = await createUserWithEmailAndPassword(fbAuth, data.email, data.password);
-
-        // Back To Admin After Register
-        if (adminUser) {
-          await fbAuth.updateCurrentUser(adminUser);
-        }
-
-        const { user } = response;
-
-        const docId = uuidv4();
-
-        await setDoc(doc(fbFirestore, 'users', docId), {
-          id: docId,
-          authId: user.uid,
-          ...dataFirestore,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
+        // Client terpisah tanpa session, supaya admin TIDAK ikut berganti akun
+        const tempClient = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, {
+          auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: 'sb-temp-register' },
         });
+
+        const { data: signUpData, error: signUpError } = await tempClient.auth.signUp({
+          email,
+          password: payload.password,
+          options: { data: { name: payload.name } },
+        });
+        if (signUpError) throw signUpError;
+        if (!signUpData.user) throw new Error('Gagal membuat akun.');
+
+        const { error: insertError } = await supabase.from('users').insert({
+          auth_id: signUpData.user.id,
+          name: payload.name,
+          name_lowercase: payload.name.toLowerCase(),
+          phone_number: phoneNumber,
+          role: payload.role,
+          email,
+          status: payload.status,
+        });
+        if (insertError) throw insertError;
       } catch (error: any) {
         throw safeWrapError(error);
       } finally {
@@ -261,7 +237,7 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
     [update]
   );
 
-  // UPDATE (Only Firestore)
+  // UPDATE (hanya tabel users)
   const onUpdate = useCallback(
     async (id: string, payload: Partial<Omit<UserInterface, 'id' | 'createdAt' | 'updatedAt'>>): Promise<UserInterface | null> => {
       if (!id) return null;
@@ -269,49 +245,34 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
       try {
         update('isLoading', true);
 
-        const sanitizedPayload = { ...payload };
+        const row: Record<string, any> = {};
+        if (payload.name !== undefined) {
+          row.name = payload.name;
+          row.name_lowercase = payload.nameLowercase ?? payload.name.toLowerCase();
+        }
+        if (payload.phoneNumber !== undefined) row.phone_number = payload.phoneNumber.trim();
+        if (payload.email !== undefined) row.email = payload.email.trim();
+        if (payload.role !== undefined) row.role = payload.role;
+        if (payload.status !== undefined) row.status = payload.status;
+        row.updated_at = new Date().toISOString();
 
-        if (typeof sanitizedPayload.email === 'string') {
-          sanitizedPayload.email = sanitizedPayload.email.trim();
+        if (row.email) {
+          const { data: dup, error } = await supabase.from('users').select('id').eq('email', row.email).neq('id', id).limit(1);
+          if (error) throw error;
+          if (dup && dup.length > 0) throw new Error('Email sudah terdaftar');
         }
 
-        if (typeof sanitizedPayload.phoneNumber === 'string') {
-          sanitizedPayload.phoneNumber = sanitizedPayload.phoneNumber.trim();
+        if (row.phone_number) {
+          const { data: dup, error } = await supabase.from('users').select('id').eq('phone_number', row.phone_number).neq('id', id).limit(1);
+          if (error) throw error;
+          if (dup && dup.length > 0) throw new Error('Nomor telepon sudah terdaftar');
         }
 
-        const usersCollectionRef = collection(fbFirestore, 'users');
+        const { data, error: updateError } = await supabase.from('users').update(row).eq('id', id).select().maybeSingle();
+        if (updateError) throw updateError;
+        if (!data) return null;
 
-        if (sanitizedPayload.email) {
-          const duplicateEmailQuery = query(usersCollectionRef, where('email', '==', sanitizedPayload.email), fbLimit(2));
-          const duplicateEmailSnapshot = await getDocs(duplicateEmailQuery);
-          const duplicateEmailExists = duplicateEmailSnapshot.docs.some((snapshotDoc) => snapshotDoc.id !== id);
-
-          if (duplicateEmailExists) {
-            throw new Error('Email sudah terdaftar');
-          }
-        }
-
-        if (sanitizedPayload.phoneNumber) {
-          const duplicatePhoneQuery = query(usersCollectionRef, where('phoneNumber', '==', sanitizedPayload.phoneNumber), fbLimit(2));
-          const duplicatePhoneSnapshot = await getDocs(duplicatePhoneQuery);
-          const duplicatePhoneExists = duplicatePhoneSnapshot.docs.some((snapshotDoc) => snapshotDoc.id !== id);
-
-          if (duplicatePhoneExists) {
-            throw new Error('Nomor telepon sudah terdaftar');
-          }
-        }
-
-        const docRef = doc(fbFirestore, 'users', id);
-        await updateDoc(docRef, {
-          ...sanitizedPayload,
-          updatedAt: serverTimestamp(),
-        });
-
-        const snap = await getDoc(docRef);
-        if (!snap.exists()) return null;
-
-        const updated = mapUser(snap.data());
-        return updated;
+        return mapUser(data);
       } catch (err) {
         throw safeWrapError(err);
       } finally {
@@ -329,23 +290,29 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
       try {
         update('isLoading', true);
 
-        const docRef = doc(fbFirestore, 'users', id);
-        const snap = await getDoc(docRef);
-        if (!snap.exists()) {
-          throw new Error('User not found in Firestore');
+        const { data: existing, error: findError } = await supabase.from('users').select('id').eq('id', id).maybeSingle();
+        if (findError) throw findError;
+        if (!existing) throw new Error('User tidak ditemukan di database');
+
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        const isSelf = session?.user?.id === authId;
+
+        if (authId) {
+          // Hapus akun login; baris profil ikut terhapus (on delete cascade)
+          const { error: rpcError } = await supabase.rpc('admin_delete_user', { target_auth_id: authId });
+          if (rpcError) throw rpcError;
+        } else {
+          const { error: delError } = await supabase.from('users').delete().eq('id', id);
+          if (delError) throw delError;
         }
-        await deleteDoc(docRef);
 
-        const current = fbAuth.currentUser;
-
-        if (current && current.uid === authId) {
-          await deleteAuthUser(current);
+        if (isSelf) {
+          await supabase.auth.signOut();
           sessionStorage.removeItem(ACCESS_TOKEN_KEY);
           update('user', '');
-        } else {
-          const functions = getFunctions(undefined, 'asia-southeast1');
-          const adminDelete = httpsCallable(functions, 'adminDeleteUser');
-          await adminDelete({ uid: authId, docId: id });
+          update('status', 'unauthenticated');
         }
       } catch (err) {
         throw safeWrapError(err);
@@ -361,7 +328,8 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
     try {
       update('isLoading', true);
 
-      await signOut(fbAuth);
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
 
       sessionStorage.removeItem(ACCESS_TOKEN_KEY);
 
