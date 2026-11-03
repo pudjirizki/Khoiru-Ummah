@@ -38,7 +38,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
     if (role === 'teacher') {
       menus = configNavigation.filter((menu) => menu.title !== 'Pengguna');
     } else if (role !== 'admin') {
-      menus = configNavigation.filter((menu) => !['Pengguna', 'Siswa'].includes(menu.title));
+      menus = configNavigation.filter((menu) => !['Pengguna', 'Siswa', 'Absensi Guru'].includes(menu.title));
     }
 
     setMenuBar(menus);
@@ -71,7 +71,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
     <nav
       id="dashboard-navigation-sidebar"
       className={twMerge(
-        `fixed left-0 top-0 z-[1000] h-screen w-[284px] border-r border-white/10 bg-[#56355F]/95 px-4 pb-5 pt-[92px] shadow-[12px_0_40px_rgba(86,53,95,0.25)] backdrop-blur-xl transition-transform duration-300 ease-out lg:block lg:translate-x-0`,
+        `fixed left-0 top-0 z-[1000] flex h-screen w-[284px] flex-col overflow-hidden border-r border-white/10 bg-[#56355F]/95 px-4 pb-5 pt-[92px] shadow-[12px_0_40px_rgba(86,53,95,0.25)] backdrop-blur-xl transition-transform duration-300 ease-out lg:translate-x-0`,
         open ? 'translate-x-0' : '-translate-x-full'
       )}
     >
@@ -100,40 +100,42 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
         <Icon icon="mdi:close" width={24} />
       </Button>
 
-      <div className="flex h-full flex-col justify-between gap-6">
+      <div className="flex min-h-0 flex-1 flex-col justify-between gap-4">
         {/* Main menu */}
-        <div className="flex flex-col gap-2">
-          <div className="mb-2 px-2">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/45">Menu Utama</p>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="flex flex-col gap-2">
+            <div className="mb-2 px-2">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/45">Menu Utama</p>
+            </div>
+
+            {menuBar?.map((menu, i) => {
+              const isActive = pathname === menu.path || searchBasePath(pathname) === searchBasePath(menu.path);
+
+              return (
+                <Button
+                  key={i}
+                  onClick={() => handleRoute(menu.path)}
+                  variant="gost"
+                  className={twMerge(
+                    `group flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left transition-all duration-200`,
+                    isActive ? `bg-[#F9AA75] text-[#56355F] shadow-[0_10px_30px_rgba(249,170,117,0.20)]` : `text-white/70 hover:bg-[#56357F]/50 hover:text-white`
+                  )}
+                >
+                  <span className={twMerge(`inline-flex h-10 w-10 items-center justify-center rounded-xl transition`, isActive ? 'bg-[#56355F]/10' : 'bg-white/8 group-hover:bg-[#56357F]/40')}>
+                    <Icon icon={menu.icon} width={20} />
+                  </span>
+
+                  <span className="flex-1 font-medium">{menu.title}</span>
+
+                  {isActive && <span className="h-2 w-2 rounded-full bg-[#A8CF45]" />}
+                </Button>
+              );
+            })}
           </div>
-
-          {menuBar?.map((menu, i) => {
-            const isActive = pathname === menu.path || searchBasePath(pathname) === searchBasePath(menu.path);
-
-            return (
-              <Button
-                key={i}
-                onClick={() => handleRoute(menu.path)}
-                variant="gost"
-                className={twMerge(
-                  `group flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left transition-all duration-200`,
-                  isActive ? `bg-[#F9AA75] text-[#56355F] shadow-[0_10px_30px_rgba(249,170,117,0.20)]` : `text-white/70 hover:bg-[#56357F]/50 hover:text-white`
-                )}
-              >
-                <span className={twMerge(`inline-flex h-10 w-10 items-center justify-center rounded-xl transition`, isActive ? 'bg-[#56355F]/10' : 'bg-white/8 group-hover:bg-[#56357F]/40')}>
-                  <Icon icon={menu.icon} width={20} />
-                </span>
-
-                <span className="flex-1 font-medium">{menu.title}</span>
-
-                {isActive && <span className="h-2 w-2 rounded-full bg-[#A8CF45]" />}
-              </Button>
-            );
-          })}
         </div>
 
         {/* User section */}
-        <div className="space-y-3">
+        <div className="shrink-0 space-y-3 border-t border-white/10 bg-[#56355F] pt-3">
           <div className="rounded-2xl border border-white/10 bg-[#56357F]/30 p-4">
             <div className="mb-3 flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border border-white/10 bg-white/90">
@@ -164,8 +166,10 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
 
           {/* Logout */}
           <Button
+            id="buttonLogout"
+            type="button"
             onClick={onLogout}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#56357F] px-4 py-3 font-medium text-white shadow-[0_10px_24px_rgba(86,53,127,0.30)] transition hover:bg-[#56357F]/85"
+            className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#F9AA75] px-4 py-3 font-semibold text-[#56355F] shadow-[0_10px_24px_rgba(249,170,117,0.25)] transition hover:bg-[#ffc097] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
           >
             <span>Keluar</span>
             <Icon icon="uil:exit" width={20} />

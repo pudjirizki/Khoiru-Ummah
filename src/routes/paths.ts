@@ -29,5 +29,8 @@ export const paths = {
       update: (slug: string) => `/dashboard/student/${slug}/update`,
       detail: (slug: string) => `/dashboard/student/${slug}/detail`,
     },
+    attendance: {
+      root: '/dashboard/attendance',
+    },
   },
 } as const;

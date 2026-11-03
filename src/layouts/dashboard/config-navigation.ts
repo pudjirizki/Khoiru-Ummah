@@ -33,4 +33,9 @@ export const configNavigation: ConfigNavigationInterface[] = [
     path: paths.dashboard.form.root,
     icon: 'mdi:form',
   },
+  {
+    title: 'Absensi Guru',
+    path: paths.dashboard.attendance.root,
+    icon: 'mdi:calendar-check',
+  },
 ];

@@ -17,6 +17,7 @@ const DashboardCreateStudentPage = lazy(() => import('/src/pages/dashboard/stude
 const DashboardUpdateStudentPage = lazy(() => import('/src/pages/dashboard/student/update'));
 const DashboardDetailStudentPage = lazy(() => import('/src/pages/dashboard/student/detail'));
 const DashboardFormPage = lazy(() => import('/src/pages/dashboard/form/app'));
+const DashboardAttendancePage = lazy(() => import('/src/pages/dashboard/attendance/app'));
 const DashboardInputFormPage = lazy(() => import('/src/pages/dashboard/form/input'));
 const DashboardCreateFormPage = lazy(() => import('/src/pages/dashboard/form/create'));
 const DashboardUpdateFormPage = lazy(() => import('/src/pages/dashboard/form/update'));
@@ -38,6 +39,7 @@ export const dashboardRoutes = [
     ),
     children: [
       { element: <DashboardHomePage />, index: true },
+      { path: 'attendance', element: <DashboardAttendancePage /> },
       {
         path: 'form',
         children: [

@@ -15,6 +15,8 @@ import { fDecrypt } from '/src/utils/format-encrypt';
 export interface UseDatabaseUserInterface {
   usersList: UserInterface[];
   isLoadingUsers: boolean;
+  isLoadingAllUsers: boolean;
+  allUsersError: string;
   // pagination meta
   page: number;
   perPage: number;
@@ -57,6 +59,8 @@ const mapUser = (row: any): UserInterface => ({
 
 export const useDatabaseUser = (): UseDatabaseUserInterface => {
   const [allUsersCache, setAllUsersCache] = useState<UserInterface[]>([]);
+  const [isLoadingAllUsers, setIsLoadingAllUsers] = useState<boolean>(true);
+  const [allUsersError, setAllUsersError] = useState<string>('');
   const [usersList, setUsersList] = useState<UserInterface[]>([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState<boolean>(false);
   const [page, setPage] = useState<number>(1);
@@ -82,9 +86,13 @@ export const useDatabaseUser = (): UseDatabaseUserInterface => {
     if (error) {
       console.error('allUsersCache error', error);
       setAllUsersCache([]);
+      setAllUsersError('Daftar guru gagal dimuat. Silakan muat ulang halaman.');
+      setIsLoadingAllUsers(false);
       return;
     }
     setAllUsersCache((data ?? []).map(mapUser));
+    setAllUsersError('');
+    setIsLoadingAllUsers(false);
   }, []);
 
   // ----------------------------------------------------------------------
@@ -284,6 +292,8 @@ export const useDatabaseUser = (): UseDatabaseUserInterface => {
 
   return {
     usersList,
+    isLoadingAllUsers,
+    allUsersError,
     isLoadingUsers,
     page,
     perPage: perPageRef.current,
