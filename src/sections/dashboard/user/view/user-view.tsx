@@ -27,9 +27,9 @@ export interface FilterInterface {
 const UserView: React.FC = () => {
   const [filters, setFilters] = useState<FilterInterface>({ search: '', role: undefined, status: undefined });
 
-  const { users, usersList, page, perPage, nextPage, prevPage, totalCount, isLoadingUsers, subscribePage } = useDatabaseUser();
+  const { users, usersList, page, perPage, nextPage, prevPage, totalCount, isLoadingUsers, subscribePage, fetchUserById } = useDatabaseUser();
 
-  const { onRegister, onUpdate } = useUserContext();
+  const { onRegister, onUpdate, onDelete } = useUserContext();
 
   // FETCH
   useEffect(() => {
@@ -67,7 +67,9 @@ const UserView: React.FC = () => {
           totalCount={totalCount}
           isLoadingUsers={isLoadingUsers}
           users={users}
+          fetchUserById={fetchUserById}
           onUpdate={onUpdate}
+          onDelete={onDelete}
           onNext={nextPage}
           onPrev={prevPage}
           subscribePage={subscribePage}

@@ -21,12 +21,14 @@ import { DialogConfirm } from '/src/components/dialog';
 
 interface UserTableProps {
   users: UseDatabaseUserInterface['users'];
+  fetchUserById: UseDatabaseUserInterface['fetchUserById'];
   usersList: UseDatabaseUserInterface['usersList'];
   page: UseDatabaseUserInterface['page'];
   perPage: UseDatabaseUserInterface['perPage'];
   totalCount: UseDatabaseUserInterface['totalCount'];
   isLoadingUsers: UseDatabaseUserInterface['isLoadingUsers'];
   onUpdate: UseUserContextProps['onUpdate'];
+  onDelete: UseUserContextProps['onDelete'];
   onNext: UseDatabaseUserInterface['nextPage'];
   onPrev: UseDatabaseUserInterface['prevPage'];
   subscribePage: UseDatabaseUserInterface['subscribePage'];
@@ -42,7 +44,7 @@ const roleMap = new Map<string, string>([
 
 // ----------------------------------------------------------------------
 
-const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, usersList, page, perPage, totalCount, isLoadingUsers, onUpdate, onNext, onPrev, subscribePage }) => {
+const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, fetchUserById, usersList, page, perPage, totalCount, isLoadingUsers, onUpdate, onDelete, onNext, onPrev, subscribePage }) => {
   const [sorting, setSorting] = useState<SortingState>([]);
 
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
@@ -173,6 +175,38 @@ const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, usersList, page
     }
   }, [enqueueSnackbar, getNextStatus, onUpdate, selectedUserIds, userStatusMap]);
 
+  const handleDeleteSelected = useCallback(async () => {
+    const failedIds: string[] = [];
+    let successCount = 0;
+
+    for (const id of selectedUserIds) {
+      try {
+        const selectedUser = usersList.find((user) => user.id === id) ?? (await fetchUserById(id));
+        if (!selectedUser) throw new Error('Pengguna tidak ditemukan');
+        await onDelete(selectedUser.id, selectedUser.authId);
+        successCount += 1;
+      } catch (error) {
+        failedIds.push(id);
+        console.error(error);
+      }
+    }
+
+    if (successCount > 0) enqueueSnackbar(`${successCount} pengguna berhasil dihapus`);
+    if (failedIds.length > 0) enqueueSnackbar(`${failedIds.length} pengguna gagal dihapus`, { variant: 'error' });
+
+    const nextSelection: RowSelectionState = {};
+    failedIds.forEach((id) => {
+      nextSelection[id] = true;
+    });
+    setRowSelection(nextSelection);
+
+    if (successCount > 0) {
+      const currentPageHasRemainingUsers = usersList.some((user) => !selectedUserIds.includes(user.id) || failedIds.includes(user.id));
+      if (!currentPageHasRemainingUsers && page > 1) onPrev();
+      else subscribePage(page);
+    }
+  }, [enqueueSnackbar, fetchUserById, onDelete, onPrev, page, selectedUserIds, subscribePage, usersList]);
+
   return (
     <>
       {selectedCount > 0 && (
@@ -192,6 +226,17 @@ const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, usersList, page
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            <DialogConfirm
+              label={
+                <div className="flex items-center gap-2 text-rose-600">
+                  <Icon icon="mdi:delete-outline" width={18} />
+                  <span>Hapus</span>
+                </div>
+              }
+              title={`Konfirmasi hapus ${selectedCount} pengguna`}
+              action={handleDeleteSelected}
+            />
+
             <DialogConfirm
               label={
                 <div className="flex items-center gap-2">
@@ -235,6 +280,7 @@ const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, usersList, page
             <Button component="RouterLink" href={paths.dashboard.user.detail(row.id)} variant="gost" data-tip="Detail" className="tooltip">
               <Icon icon="mdi:eye" width={24} className="tooltip" />
             </Button>
+
           </div>
         )}
       />
