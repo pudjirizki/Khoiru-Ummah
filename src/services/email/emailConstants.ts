@@ -1,0 +1,4 @@
+export const EMAIL_TYPE = {
+  WELCOME: 'WELCOME',
+  NOTIFICATION: 'NOTIFICATION',
+};
