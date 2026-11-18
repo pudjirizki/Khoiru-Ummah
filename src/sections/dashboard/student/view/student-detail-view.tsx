@@ -22,6 +22,7 @@ import DetailCardSkeleton from '../detail/detail-card-skeleton';
 import DetailStudentProfile from '../detail/detail-student-profile';
 import DetailChartAssessment from '../detail/detail-chart-assessment';
 import DetailHistoryAssessment from '../detail/detail-history-assessment';
+import ReportExportControls from '../report-export-controls';
 
 // ----------------------------------------------------------------------
 
@@ -220,6 +221,8 @@ const StudentDetailView: React.FC<StudentDetailViewProps> = ({ slug }) => {
           />
         </div>
       )}
+
+      {selectedStudent && <ReportExportControls student={selectedStudent} students={allStudentsCache} />}
 
       {selectedStudent && !isLoadingValue ? (
         <div className="mt-10 flex flex-col gap-6">
