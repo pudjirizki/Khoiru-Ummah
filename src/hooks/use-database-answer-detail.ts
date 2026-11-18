@@ -1,25 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  orderBy,
-  getDocs,
-  limit as fbLimit,
-  startAfter,
-  QueryDocumentSnapshot,
-  Timestamp,
-  updateDoc,
-  serverTimestamp,
-  getDoc,
-  deleteDoc,
-  doc,
-  setDoc,
-} from 'firebase/firestore';
-import { v4 as uuidv4 } from 'uuid';
-// firebase
-import { fbFirestore } from '/src/firebase';
+// supabase
+import { supabase } from '/src/supabase';
 // interfaces
 import { AnswerDetailInterface, AnswerDetailsParamsInterface, PayloadCreateAnswerDetailInterface } from '/src/interfaces/answer-details';
 
@@ -28,29 +9,19 @@ import { AnswerDetailInterface, AnswerDetailsParamsInterface, PayloadCreateAnswe
 export interface UseDatabaseAnswerDetailInterface {
   answerDetailsList: AnswerDetailInterface[];
   isLoading: boolean;
-  // pagination meta
   page: number;
   perPage: number;
   maxPages: number;
   hasNext: boolean;
   hasPrev: boolean;
-  // controls
   answerDetails: (params?: AnswerDetailsParamsInterface) => void;
   nextPage: () => void;
   prevPage: () => void;
   resetPagination: () => void;
-  // helpers
-  getAnswerDetailById: (id: string) => AnswerDetailInterface | null; // local
-  fetchAnswerDetailById: (id: string) => Promise<AnswerDetailInterface | null>; // cloud
-  // raw
-  allAnswerDetailsCache: AnswerDetailInterface[]; // optional cache maintained by a background listener (kept small cost)
-  //
-  createAnswerDetail: (payload: PayloadCreateAnswerDetailInterface) => Promise<{
-    questionId: string;
-    answerId: string;
-    point: number;
-    id: string;
-  }>;
+  getAnswerDetailById: (id: string) => AnswerDetailInterface | null;
+  fetchAnswerDetailById: (id: string) => Promise<AnswerDetailInterface | null>;
+  allAnswerDetailsCache: AnswerDetailInterface[];
+  createAnswerDetail: (payload: PayloadCreateAnswerDetailInterface) => Promise<{ questionId: string; answerId: string; point: number; id: string }>;
   updateAnswerDetail: (id: string, payload: Partial<Omit<AnswerDetailInterface, 'id' | 'createdAt' | 'updatedAt'>>) => Promise<AnswerDetailInterface | null>;
   deleteAnswerDetail: (id: string) => Promise<boolean>;
 }
@@ -59,298 +30,125 @@ export interface UseDatabaseAnswerDetailInterface {
 
 const mapAnswerDetail = (data: any): AnswerDetailInterface => ({
   id: data.id,
-  answerId: data.answerId,
-  questionId: data.questionId,
+  answerId: data.answer_id ?? data.answerId,
+  questionId: data.question_id ?? data.questionId,
   point: data.point,
-  createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(data.createdAt),
-  updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(data.updatedAt),
+  createdAt: data.created_at ? new Date(data.created_at) : new Date(data.createdAt || Date.now()),
+  updatedAt: data.updated_at ? new Date(data.updated_at) : new Date(data.updatedAt || Date.now()),
 });
+
+const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
 // ----------------------------------------------------------------------
 
 export const useDatabaseAnswerDetail = (): UseDatabaseAnswerDetailInterface => {
   const [allAnswerDetailsCache, setAllAnswerDetailsCache] = useState<AnswerDetailInterface[]>([]);
-
   const [answerDetailsList, setAnswerDetailsList] = useState<AnswerDetailInterface[]>([]);
-
   const [isLoading, setIsLoading] = useState<boolean>(false);
-
   const [page, setPage] = useState<number>(1);
+  const [totalCount, setTotalCount] = useState<number>(0);
 
   const perPageRef = useRef<number>(5);
-
   const limitRef = useRef<number>(50);
-
-  const cursorsRef = useRef<QueryDocumentSnapshot<any>[] | null[]>([null]);
-
-  const lastVisibleRef = useRef<QueryDocumentSnapshot<any> | null>(null);
-
   const paramsRef = useRef<AnswerDetailsParamsInterface>({ answerId: '', questionId: '', limit: 50, perPage: 5 });
 
-  const unsubscribeRef = useRef<(() => void) | null>(null);
-
-  // ALL ANSWER DETAILS CACHE
+  // ALL CACHE with realtime
   useEffect(() => {
-    const q = query(collection(fbFirestore, 'answerDetails'), orderBy('createdAt'));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const arr: AnswerDetailInterface[] = [];
-        snap.forEach((d) => arr.push(mapAnswerDetail({ id: d.id, ...d.data() })));
-        setAllAnswerDetailsCache(arr);
-      },
-      (err) => {
-        console.error('allAnswerDetailsCache snapshot error', err);
-        setAllAnswerDetailsCache([]);
-      }
-    );
-
-    return () => {
-      unsub();
-      setAllAnswerDetailsCache([]);
+    let isMounted = true;
+    const fetchAll = async () => {
+      const { data } = await supabase.from('answer_details').select('*').order('created_at', { ascending: true });
+      if (data && isMounted) setAllAnswerDetailsCache(data.map(mapAnswerDetail));
     };
+    fetchAll();
+    const channel = supabase.channel('public:answer_details_cache')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'answer_details' }, () => fetchAll())
+      .subscribe();
+    return () => { isMounted = false; supabase.removeChannel(channel); };
   }, []);
 
-  const buildQueryForPage = useCallback((pageIndex: number) => {
-    const { answerId, questionId } = paramsRef.current;
+  const subscribePage = useCallback(async (pageIndex: number) => {
     const pageSize = perPageRef.current;
-
-    const collectionRef = collection(fbFirestore, 'answerDetails');
-    const qParts: any[] = [];
-
-    if (answerId) qParts.push(where('answerId', '==', answerId));
-    if (questionId) qParts.push(where('questionId', '==', questionId));
-
-    qParts.push(orderBy('createdAt', 'desc'));
-
-    if (pageIndex > 1) {
-      const cursor = cursorsRef.current[pageIndex - 1] ?? null;
-      if (cursor) {
-        qParts.push(startAfter(cursor));
+    const { answerId, questionId } = paramsRef.current;
+    const from = (pageIndex - 1) * pageSize;
+    const to = from + pageSize - 1;
+    setIsLoading(true);
+    try {
+      let q = supabase.from('answer_details').select('*', { count: 'exact' });
+      if (answerId) q = q.eq('answer_id', answerId);
+      if (questionId) q = q.eq('question_id', questionId);
+      q = q.order('created_at', { ascending: false }).range(from, to);
+      const { data, count, error } = await q;
+      if (!error && data) {
+        setAnswerDetailsList(data.map(mapAnswerDetail));
+        if (count !== null && count !== undefined) setTotalCount(count);
       }
-    }
-
-    qParts.push(fbLimit(pageSize));
-
-    return query(collectionRef, ...qParts);
-  }, []);
-
-  const subscribePage = useCallback(
-    (pageIndex: number) => {
-      const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-      if (pageIndex < 1 || pageIndex > max) return;
-
-      // cleanup previous subscription
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-
-      setIsLoading(true);
-
-      const q = buildQueryForPage(pageIndex);
-
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          console.info('[paginate snapshot] page', pageIndex, 'size', snap.size);
-          const list: AnswerDetailInterface[] = [];
-          snap.forEach((d) => {
-            list.push(mapAnswerDetail({ id: d.id, ...d.data() }));
-          });
-
-          setAnswerDetailsList(list);
-          setIsLoading(false);
-
-          const last = snap.docs[snap.docs.length - 1] ?? null;
-          lastVisibleRef.current = last || null;
-          cursorsRef.current[pageIndex] = last || null;
-        },
-        (err) => {
-          console.error('paginate snapshot error', err.code, err.message);
-          setIsLoading(false);
-        }
-      );
-
-      unsubscribeRef.current = unsub;
+    } catch (err) {
+      console.error('subscribePage answer_details error', err);
+    } finally {
+      setIsLoading(false);
       setPage(pageIndex);
-    },
-    [buildQueryForPage]
-  );
-
-  const answerDetails = useCallback(
-    (params?: AnswerDetailsParamsInterface) => {
-      const answerId = params?.answerId ?? '';
-      const questionId = params?.questionId ?? '';
-      const limit = params?.limit ?? 50;
-      const perPage = params?.perPage ?? 5;
-
-      paramsRef.current = { answerId, questionId, limit, perPage };
-      limitRef.current = limit;
-      perPageRef.current = perPage;
-
-      cursorsRef.current = [null];
-      lastVisibleRef.current = null;
-
-      subscribePage(1);
-    },
-    [subscribePage]
-  );
-
-  const nextPage = useCallback(() => {
-    const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-    if (page >= max) return;
-    const cursorForNext = cursorsRef.current[page];
-    if (!cursorForNext) {
-      subscribePage(page + 1);
-    } else {
-      subscribePage(page + 1);
     }
-  }, [page, subscribePage]);
-
-  const prevPage = useCallback(() => {
-    if (page <= 1) return;
-    subscribePage(page - 1);
-  }, [page, subscribePage]);
-
-  const resetPagination = useCallback(() => {
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current();
-      unsubscribeRef.current = null;
-    }
-
-    cursorsRef.current = [null];
-    lastVisibleRef.current = null;
-    setAnswerDetailsList([]);
-    setPage(1);
-    setIsLoading(false);
   }, []);
 
-  // LOCAL GETTER
-  const getAnswerDetailById = useCallback(
-    (id: string): AnswerDetailInterface | null => {
-      if (!id) return null;
-      return allAnswerDetailsCache.find((u) => u.id === id) ?? null;
-    },
-    [allAnswerDetailsCache]
-  );
+  const answerDetails = useCallback((params?: AnswerDetailsParamsInterface) => {
+    paramsRef.current = { answerId: params?.answerId ?? '', questionId: params?.questionId ?? '', limit: params?.limit ?? 50, perPage: params?.perPage ?? 5 };
+    limitRef.current = params?.limit ?? 50;
+    perPageRef.current = params?.perPage ?? 5;
+    subscribePage(1);
+  }, [subscribePage]);
+
+  const maxPages = Math.max(1, Math.ceil((totalCount || limitRef.current || 50) / perPageRef.current));
+  const hasNext = page < maxPages;
+  const hasPrev = page > 1;
+
+  const nextPage = useCallback(() => { if (page < maxPages) subscribePage(page + 1); }, [page, maxPages, subscribePage]);
+  const prevPage = useCallback(() => { if (page > 1) subscribePage(page - 1); }, [page, subscribePage]);
+  const resetPagination = useCallback(() => { setAnswerDetailsList([]); setPage(1); setIsLoading(false); }, []);
+
+  const getAnswerDetailById = useCallback((id: string) => allAnswerDetailsCache.find((u) => u.id === id) ?? null, [allAnswerDetailsCache]);
 
   const fetchAnswerDetailById = useCallback(async (id: string): Promise<AnswerDetailInterface | null> => {
     if (!id) return null;
-    try {
-      const q = query(collection(fbFirestore, 'answerDetails'), where('id', '==', id), fbLimit(1));
-      const snap = await getDocs(q);
-      if (snap.empty) return null;
-      const docSnap = snap.docs[0];
-      return mapAnswerDetail({ id: docSnap.id, ...docSnap.data() });
-    } catch (err) {
-      console.error('fetchAnswerDetailById error', err);
-      return null;
-    }
+    const { data, error } = await supabase.from('answer_details').select('*').eq('id', id).maybeSingle();
+    if (error || !data) return null;
+    return mapAnswerDetail(data);
   }, []);
 
-  const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
-
-  // CRAETE ANSWER DETAILS
   const createAnswerDetail = useCallback(async (payload: PayloadCreateAnswerDetailInterface) => {
     try {
-      const docId = uuidv4();
-
-      await setDoc(doc(fbFirestore, 'answerDetails', docId), {
-        id: docId,
-        ...payload,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-
-      return {
-        id: docId,
-        ...payload,
-      };
-    } catch (error) {
-      throw safeWrapError(error);
-    }
+      const { data, error } = await supabase.from('answer_details').insert({
+        question_id: payload.questionId,
+        answer_id: payload.answerId,
+        point: payload.point,
+      }).select().single();
+      if (error) throw error;
+      return { id: data.id, questionId: payload.questionId, answerId: payload.answerId, point: payload.point };
+    } catch (error) { throw safeWrapError(error); }
   }, []);
 
-  // UPDATE ANSWER DETAILS
-  const updateAnswerDetail = useCallback(
-    async (id: string, payload: Partial<Omit<AnswerDetailInterface, 'id' | 'createdAt' | 'updatedAt'>>): Promise<AnswerDetailInterface | null> => {
-      if (!id) return null;
-
-      try {
-        const docRef = doc(fbFirestore, 'answerDetails', id);
-        await updateDoc(docRef, {
-          ...payload,
-          updatedAt: serverTimestamp(),
-        });
-
-        const snap = await getDoc(docRef);
-        if (!snap.exists()) return null;
-
-        const updated = mapAnswerDetail(snap.data());
-
-        setAllAnswerDetailsCache((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
-        setAnswerDetailsList((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
-
-        return updated;
-      } catch (err) {
-        throw safeWrapError(err);
-      }
-    },
-    [setAllAnswerDetailsCache, setAnswerDetailsList]
-  );
-
-  // DELETE ANSWER DETAILS
-  const deleteAnswerDetail = useCallback(
-    async (id: string): Promise<boolean> => {
-      if (!id) return false;
-
-      try {
-        const docRef = doc(fbFirestore, 'answerDetails', id);
-        await deleteDoc(docRef);
-
-        setAllAnswerDetailsCache((prev) => prev.filter((u) => u.id !== id));
-        setAnswerDetailsList((prev) => prev.filter((u) => u.id !== id));
-
-        return true;
-      } catch (err) {
-        throw safeWrapError(err);
-      }
-    },
-    [setAllAnswerDetailsCache, setAnswerDetailsList]
-  );
-
-  // CLEANUP ON UNMONT
-  useEffect(() => {
-    return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-    };
+  const updateAnswerDetail = useCallback(async (id: string, payload: Partial<Omit<AnswerDetailInterface, 'id' | 'createdAt' | 'updatedAt'>>): Promise<AnswerDetailInterface | null> => {
+    if (!id) return null;
+    try {
+      const updateData: any = {};
+      if (payload.questionId !== undefined) updateData.question_id = payload.questionId;
+      if (payload.answerId !== undefined) updateData.answer_id = payload.answerId;
+      if (payload.point !== undefined) updateData.point = payload.point;
+      const { data, error } = await supabase.from('answer_details').update(updateData).eq('id', id).select().single();
+      if (error) throw error;
+      return mapAnswerDetail(data);
+    } catch (err) { throw safeWrapError(err); }
   }, []);
 
-  const hasNext = page < Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
+  const deleteAnswerDetail = useCallback(async (id: string): Promise<boolean> => {
+    if (!id) return false;
+    try {
+      const { error } = await supabase.from('answer_details').delete().eq('id', id);
+      if (error) throw error;
+      setAllAnswerDetailsCache((prev) => prev.filter((u) => u.id !== id));
+      setAnswerDetailsList((prev) => prev.filter((u) => u.id !== id));
+      return true;
+    } catch (err) { throw safeWrapError(err); }
+  }, []);
 
-  const hasPrev = page > 1;
-
-  return {
-    answerDetailsList,
-    isLoading,
-    page,
-    perPage: perPageRef.current,
-    maxPages: Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current)),
-    hasNext,
-    hasPrev,
-    answerDetails,
-    nextPage,
-    prevPage,
-    resetPagination,
-    getAnswerDetailById,
-    fetchAnswerDetailById,
-    createAnswerDetail,
-    updateAnswerDetail,
-    deleteAnswerDetail,
-    allAnswerDetailsCache,
-  };
+  return { answerDetailsList, isLoading, page, perPage: perPageRef.current, maxPages, hasNext, hasPrev, answerDetails, nextPage, prevPage, resetPagination, getAnswerDetailById, fetchAnswerDetailById, createAnswerDetail, updateAnswerDetail, deleteAnswerDetail, allAnswerDetailsCache };
 };

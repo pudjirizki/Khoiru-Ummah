@@ -1,9 +1,11 @@
-import { User } from 'firebase/auth';
-
 // ----------------------------------------------------------------------
 
-export interface CurrentUserInterface extends User {
+export interface CurrentUserInterface {
+  id?: string;
+  uid?: string;
+  email?: string | null;
   databaseUsers: UserInterface | null;
+  [key: string]: any;
 }
 
 export interface UserInterface {

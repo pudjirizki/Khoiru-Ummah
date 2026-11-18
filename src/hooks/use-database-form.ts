@@ -1,25 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  orderBy,
-  getDocs,
-  limit as fbLimit,
-  startAfter,
-  QueryDocumentSnapshot,
-  Timestamp,
-  updateDoc,
-  serverTimestamp,
-  getDoc,
-  deleteDoc,
-  doc,
-  setDoc,
-} from 'firebase/firestore';
-import { v4 as uuidv4 } from 'uuid';
-// firebase
-import { fbFirestore } from '/src/firebase';
+// supabase
+import { supabase } from '/src/supabase';
 // interfaces
 import { FormInterface, FormsParamsInterface, PayloadCreateFormInterface } from '/src/interfaces/form';
 
@@ -61,13 +42,13 @@ export interface UseDatabaseFormInterface {
 
 const mapForm = (data: any): FormInterface => ({
   id: data.id,
-  createdBy: data.createdBy,
+  createdBy: data.created_by,
   title: data.title,
   class: data.class,
   description: data.description,
   notes: data.notes,
-  createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(data.createdAt),
-  updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(data.updatedAt),
+  createdAt: new Date(data.created_at),
+  updatedAt: new Date(data.updated_at),
 });
 
 // ----------------------------------------------------------------------
@@ -85,61 +66,52 @@ export const useDatabaseForm = (): UseDatabaseFormInterface => {
 
   const limitRef = useRef<number>(50);
 
-  const cursorsRef = useRef<QueryDocumentSnapshot<any>[] | null[]>([null]);
-
-  const lastVisibleRef = useRef<QueryDocumentSnapshot<any> | null>(null);
-
   const paramsRef = useRef<FormsParamsInterface>({ class: '', limit: 50, perPage: 5 });
 
   const unsubscribeRef = useRef<(() => void) | null>(null);
 
-  // ALL FORM CACHE
+  // ALL FORM CACHE (fetch + Supabase Realtime channel)
   useEffect(() => {
-    const q = query(collection(fbFirestore, 'forms'), orderBy('createdAt'));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const arr: FormInterface[] = [];
-        snap.forEach((d) => arr.push(mapForm({ id: d.id, ...d.data() })));
-        setAllFormsCache(arr);
-      },
-      (err) => {
-        console.error('allFormsCache snapshot error', err);
-        setAllFormsCache([]);
+    let isMounted = true;
+
+    const fetchAll = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('forms')
+          .select('*')
+          .order('created_at', { ascending: true });
+
+        if (error) {
+          console.error('allFormsCache fetch error', error);
+          if (isMounted) setAllFormsCache([]);
+          return;
+        }
+
+        if (isMounted) setAllFormsCache((data ?? []).map(mapForm));
+      } catch (err) {
+        console.error('allFormsCache fetch error', err);
+        if (isMounted) setAllFormsCache([]);
       }
-    );
+    };
+
+    fetchAll();
+
+    const channel = supabase
+      .channel('forms-cache')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'forms' }, () => {
+        fetchAll();
+      })
+      .subscribe();
 
     return () => {
-      unsub();
+      isMounted = false;
+      supabase.removeChannel(channel);
       setAllFormsCache([]);
     };
   }, []);
 
-  const buildQueryForPage = useCallback((pageIndex: number) => {
-    const { class: classFilter } = paramsRef.current;
-    const pageSize = perPageRef.current;
-
-    const collectionRef = collection(fbFirestore, 'forms');
-    const qParts: any[] = [];
-
-    if (classFilter) qParts.push(where('class', 'array-contains', classFilter));
-
-    qParts.push(orderBy('createdAt', 'desc'));
-
-    if (pageIndex > 1) {
-      const cursor = cursorsRef.current[pageIndex - 1] ?? null;
-      if (cursor) {
-        qParts.push(startAfter(cursor));
-      }
-    }
-
-    qParts.push(fbLimit(pageSize));
-
-    return query(collectionRef, ...qParts);
-  }, []);
-
   const subscribePage = useCallback(
-    (pageIndex: number) => {
+    async (pageIndex: number) => {
       const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
       if (pageIndex < 1 || pageIndex > max) return;
 
@@ -151,34 +123,38 @@ export const useDatabaseForm = (): UseDatabaseFormInterface => {
 
       setIsLoading(true);
 
-      const q = buildQueryForPage(pageIndex);
+      try {
+        const { class: classFilter } = paramsRef.current;
+        const pageSize = perPageRef.current;
+        const from = (pageIndex - 1) * pageSize;
+        const to = from + pageSize - 1;
 
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          console.info('[paginate snapshot] page', pageIndex, 'size', snap.size);
-          const list: FormInterface[] = [];
-          snap.forEach((d) => {
-            list.push(mapForm({ id: d.id, ...d.data() }));
-          });
+        let q = supabase.from('forms').select('*', { count: 'exact' });
 
-          setFormsList(list);
-          setIsLoading(false);
-
-          const last = snap.docs[snap.docs.length - 1] ?? null;
-          lastVisibleRef.current = last || null;
-          cursorsRef.current[pageIndex] = last || null;
-        },
-        (err) => {
-          console.error('paginate snapshot error', err.code, err.message);
-          setIsLoading(false);
+        if (classFilter) {
+          q = q.contains('class', [classFilter]);
         }
-      );
 
-      unsubscribeRef.current = unsub;
-      setPage(pageIndex);
+        q = q.order('created_at', { ascending: false }).range(from, to);
+
+        const { data, error } = await q;
+
+        if (error) {
+          console.error('paginate fetch error', error.message);
+          setIsLoading(false);
+          return;
+        }
+
+        console.info('[paginate fetch] page', pageIndex, 'size', (data ?? []).length);
+        setFormsList((data ?? []).map(mapForm));
+        setIsLoading(false);
+        setPage(pageIndex);
+      } catch (err) {
+        console.error('subscribePage error', err);
+        setIsLoading(false);
+      }
     },
-    [buildQueryForPage]
+    []
   );
 
   const forms = useCallback(
@@ -191,9 +167,6 @@ export const useDatabaseForm = (): UseDatabaseFormInterface => {
       limitRef.current = limit;
       perPageRef.current = perPage;
 
-      cursorsRef.current = [null];
-      lastVisibleRef.current = null;
-
       subscribePage(1);
     },
     [subscribePage]
@@ -202,12 +175,7 @@ export const useDatabaseForm = (): UseDatabaseFormInterface => {
   const nextPage = useCallback(() => {
     const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
     if (page >= max) return;
-    const cursorForNext = cursorsRef.current[page];
-    if (!cursorForNext) {
-      subscribePage(page + 1);
-    } else {
-      subscribePage(page + 1);
-    }
+    subscribePage(page + 1);
   }, [page, subscribePage]);
 
   const prevPage = useCallback(() => {
@@ -221,8 +189,6 @@ export const useDatabaseForm = (): UseDatabaseFormInterface => {
       unsubscribeRef.current = null;
     }
 
-    cursorsRef.current = [null];
-    lastVisibleRef.current = null;
     setFormsList([]);
     setPage(1);
     setIsLoading(false);
@@ -240,11 +206,15 @@ export const useDatabaseForm = (): UseDatabaseFormInterface => {
   const fetchFormById = useCallback(async (id: string): Promise<FormInterface | null> => {
     if (!id) return null;
     try {
-      const q = query(collection(fbFirestore, 'forms'), where('id', '==', id), fbLimit(1));
-      const snap = await getDocs(q);
-      if (snap.empty) return null;
-      const docSnap = snap.docs[0];
-      return mapForm({ id: docSnap.id, ...docSnap.data() });
+      const { data, error } = await supabase
+        .from('forms')
+        .select('*')
+        .eq('id', id)
+        .limit(1)
+        .single();
+
+      if (error || !data) return null;
+      return mapForm(data);
     } catch (err) {
       console.error('fetchFormById error', err);
       return null;
@@ -253,21 +223,30 @@ export const useDatabaseForm = (): UseDatabaseFormInterface => {
 
   const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
-  // CRAETE FORM
+  // CREATE FORM
   const createForm = useCallback(async (payload: PayloadCreateFormInterface) => {
     try {
-      const docId = uuidv4();
+      const { data, error } = await supabase
+        .from('forms')
+        .insert({
+          created_by: payload.createdBy,
+          title: payload.title,
+          class: payload.class,
+          description: payload.description,
+          notes: payload.notes,
+        })
+        .select()
+        .single();
 
-      await setDoc(doc(fbFirestore, 'forms', docId), {
-        id: docId,
-        ...payload,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      if (error || !data) throw new Error(error?.message ?? 'Failed to create form');
 
       return {
-        id: docId,
-        ...payload,
+        id: data.id,
+        createdBy: payload.createdBy,
+        title: payload.title,
+        class: payload.class,
+        description: payload.description,
+        notes: payload.notes,
       };
     } catch (error) {
       throw safeWrapError(error);
@@ -280,16 +259,23 @@ export const useDatabaseForm = (): UseDatabaseFormInterface => {
       if (!id) return null;
 
       try {
-        const docRef = doc(fbFirestore, 'forms', id);
-        await updateDoc(docRef, {
-          ...payload,
-          updatedAt: serverTimestamp(),
-        });
+        const updateData: Record<string, any> = {};
+        if (payload.createdBy !== undefined) updateData['created_by'] = payload.createdBy;
+        if (payload.title !== undefined) updateData['title'] = payload.title;
+        if (payload.class !== undefined) updateData['class'] = payload.class;
+        if (payload.description !== undefined) updateData['description'] = payload.description;
+        if (payload.notes !== undefined) updateData['notes'] = payload.notes;
 
-        const snap = await getDoc(docRef);
-        if (!snap.exists()) return null;
+        const { data, error } = await supabase
+          .from('forms')
+          .update(updateData)
+          .eq('id', id)
+          .select()
+          .single();
 
-        const updated = mapForm(snap.data());
+        if (error || !data) return null;
+
+        const updated = mapForm(data);
 
         setAllFormsCache((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
         setFormsList((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
@@ -308,8 +294,9 @@ export const useDatabaseForm = (): UseDatabaseFormInterface => {
       if (!id) return false;
 
       try {
-        const docRef = doc(fbFirestore, 'forms', id);
-        await deleteDoc(docRef);
+        const { error } = await supabase.from('forms').delete().eq('id', id);
+
+        if (error) throw new Error(error.message);
 
         setAllFormsCache((prev) => prev.filter((u) => u.id !== id));
         setFormsList((prev) => prev.filter((u) => u.id !== id));
@@ -322,7 +309,7 @@ export const useDatabaseForm = (): UseDatabaseFormInterface => {
     [setAllFormsCache, setFormsList]
   );
 
-  // CLEANUP ON UNMONT
+  // CLEANUP ON UNMOUNT
   useEffect(() => {
     return () => {
       if (unsubscribeRef.current) {

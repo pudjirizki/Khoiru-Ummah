@@ -98,7 +98,11 @@ const ProfileForm: React.FC<ProfileFormProps> = ({ studentList, currentUser }) =
         router.reload();
         enqueueSnackbar('Profile berhasil diperbarui');
       } catch (error: any) {
-        if (error.message === 'FirebaseError: Firebase: Error (auth/email-already-in-use).') {
+        if (
+          error.message === 'FirebaseError: Firebase: Error (auth/email-already-in-use).' ||
+          error.message?.toLowerCase().includes('email sudah terdaftar') ||
+          error.message?.toLowerCase().includes('already in use')
+        ) {
           enqueueSnackbar('Email telah terdaftar', { variant: 'error' });
         } else {
           enqueueSnackbar(error.message, { variant: 'error' });

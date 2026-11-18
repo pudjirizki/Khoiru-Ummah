@@ -1,25 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  orderBy,
-  getDocs,
-  limit as fbLimit,
-  startAfter,
-  QueryDocumentSnapshot,
-  Timestamp,
-  updateDoc,
-  serverTimestamp,
-  getDoc,
-  deleteDoc,
-  doc,
-  setDoc,
-} from 'firebase/firestore';
-import { v4 as uuidv4 } from 'uuid';
-// firebase
-import { fbFirestore } from '/src/firebase';
+// supabase
+import { supabase } from '/src/supabase';
 // interfaces
 import { AnswerInterface, AnswersParamsInterface, PayloadCreateAnswerInterface } from '/src/interfaces/answer';
 
@@ -28,29 +9,19 @@ import { AnswerInterface, AnswersParamsInterface, PayloadCreateAnswerInterface }
 export interface UseDatabaseAnswerInterface {
   answersList: AnswerInterface[];
   isLoading: boolean;
-  // pagination meta
   page: number;
   perPage: number;
   maxPages: number;
   hasNext: boolean;
   hasPrev: boolean;
-  // controls
   answers: (params?: AnswersParamsInterface) => void;
   nextPage: () => void;
   prevPage: () => void;
   resetPagination: () => void;
-  // helpers
-  getAnswerById: (id: string) => AnswerInterface | null; // local
-  fetchAnswerById: (id: string) => Promise<AnswerInterface | null>; // cloud
-  // raw
-  allAnswersCache: AnswerInterface[]; // optional cache maintained by a background listener (kept small cost)
-  //
-  createAnswer: (payload: PayloadCreateAnswerInterface) => Promise<{
-    criteriaId: string;
-    assessmentId: string;
-    averagePoint: number;
-    id: string;
-  }>;
+  getAnswerById: (id: string) => AnswerInterface | null;
+  fetchAnswerById: (id: string) => Promise<AnswerInterface | null>;
+  allAnswersCache: AnswerInterface[];
+  createAnswer: (payload: PayloadCreateAnswerInterface) => Promise<{ criteriaId: string; assessmentId: string; averagePoint: number; id: string }>;
   updateAnswer: (id: string, payload: Partial<Omit<AnswerInterface, 'id' | 'createdAt' | 'updatedAt'>>) => Promise<AnswerInterface | null>;
   deleteAnswer: (id: string) => Promise<boolean>;
 }
@@ -59,298 +30,125 @@ export interface UseDatabaseAnswerInterface {
 
 const mapAnswer = (data: any): AnswerInterface => ({
   id: data.id,
-  assessmentId: data.assessmentId,
-  criteriaId: data.criteriaId,
-  averagePoint: data.averagePoint,
-  createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(data.createdAt),
-  updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(data.updatedAt),
+  assessmentId: data.assessment_id ?? data.assessmentId,
+  criteriaId: data.criteria_id ?? data.criteriaId,
+  averagePoint: data.average_point ?? data.averagePoint,
+  createdAt: data.created_at ? new Date(data.created_at) : new Date(data.createdAt || Date.now()),
+  updatedAt: data.updated_at ? new Date(data.updated_at) : new Date(data.updatedAt || Date.now()),
 });
+
+const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
 // ----------------------------------------------------------------------
 
 export const useDatabaseAnswer = (): UseDatabaseAnswerInterface => {
   const [allAnswersCache, setAllAnswersCache] = useState<AnswerInterface[]>([]);
-
   const [answersList, setAnswersList] = useState<AnswerInterface[]>([]);
-
   const [isLoading, setIsLoading] = useState<boolean>(false);
-
   const [page, setPage] = useState<number>(1);
+  const [totalCount, setTotalCount] = useState<number>(0);
 
   const perPageRef = useRef<number>(5);
-
   const limitRef = useRef<number>(50);
-
-  const cursorsRef = useRef<QueryDocumentSnapshot<any>[] | null[]>([null]);
-
-  const lastVisibleRef = useRef<QueryDocumentSnapshot<any> | null>(null);
-
   const paramsRef = useRef<AnswersParamsInterface>({ assessmentId: '', criteriaId: '', limit: 50, perPage: 5 });
 
-  const unsubscribeRef = useRef<(() => void) | null>(null);
-
-  // ALL ANSWERS CACHE
+  // ALL ANSWERS CACHE with realtime
   useEffect(() => {
-    const q = query(collection(fbFirestore, 'answers'), orderBy('createdAt'));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const arr: AnswerInterface[] = [];
-        snap.forEach((d) => arr.push(mapAnswer({ id: d.id, ...d.data() })));
-        setAllAnswersCache(arr);
-      },
-      (err) => {
-        console.error('allAnswersCache snapshot error', err);
-        setAllAnswersCache([]);
-      }
-    );
-
-    return () => {
-      unsub();
-      setAllAnswersCache([]);
+    let isMounted = true;
+    const fetchAll = async () => {
+      const { data } = await supabase.from('answers').select('*').order('created_at', { ascending: true });
+      if (data && isMounted) setAllAnswersCache(data.map(mapAnswer));
     };
+    fetchAll();
+    const channel = supabase.channel('public:answers_cache')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'answers' }, () => fetchAll())
+      .subscribe();
+    return () => { isMounted = false; supabase.removeChannel(channel); };
   }, []);
 
-  const buildQueryForPage = useCallback((pageIndex: number) => {
-    const { assessmentId, criteriaId } = paramsRef.current;
+  const subscribePage = useCallback(async (pageIndex: number) => {
     const pageSize = perPageRef.current;
-
-    const collectionRef = collection(fbFirestore, 'answers');
-    const qParts: any[] = [];
-
-    if (assessmentId) qParts.push(where('assessmentId', '==', assessmentId));
-    if (criteriaId) qParts.push(where('criteriaId', '==', criteriaId));
-
-    qParts.push(orderBy('createdAt', 'desc'));
-
-    if (pageIndex > 1) {
-      const cursor = cursorsRef.current[pageIndex - 1] ?? null;
-      if (cursor) {
-        qParts.push(startAfter(cursor));
+    const { assessmentId, criteriaId } = paramsRef.current;
+    const from = (pageIndex - 1) * pageSize;
+    const to = from + pageSize - 1;
+    setIsLoading(true);
+    try {
+      let q = supabase.from('answers').select('*', { count: 'exact' });
+      if (assessmentId) q = q.eq('assessment_id', assessmentId);
+      if (criteriaId) q = q.eq('criteria_id', criteriaId);
+      q = q.order('created_at', { ascending: false }).range(from, to);
+      const { data, count, error } = await q;
+      if (!error && data) {
+        setAnswersList(data.map(mapAnswer));
+        if (count !== null && count !== undefined) setTotalCount(count);
       }
-    }
-
-    qParts.push(fbLimit(pageSize));
-
-    return query(collectionRef, ...qParts);
-  }, []);
-
-  const subscribePage = useCallback(
-    (pageIndex: number) => {
-      const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-      if (pageIndex < 1 || pageIndex > max) return;
-
-      // cleanup previous subscription
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-
-      setIsLoading(true);
-
-      const q = buildQueryForPage(pageIndex);
-
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          console.info('[paginate snapshot] page', pageIndex, 'size', snap.size);
-          const list: AnswerInterface[] = [];
-          snap.forEach((d) => {
-            list.push(mapAnswer({ id: d.id, ...d.data() }));
-          });
-
-          setAnswersList(list);
-          setIsLoading(false);
-
-          const last = snap.docs[snap.docs.length - 1] ?? null;
-          lastVisibleRef.current = last || null;
-          cursorsRef.current[pageIndex] = last || null;
-        },
-        (err) => {
-          console.error('paginate snapshot error', err.code, err.message);
-          setIsLoading(false);
-        }
-      );
-
-      unsubscribeRef.current = unsub;
+    } catch (err) {
+      console.error('subscribePage answers error', err);
+    } finally {
+      setIsLoading(false);
       setPage(pageIndex);
-    },
-    [buildQueryForPage]
-  );
-
-  const answers = useCallback(
-    (params?: AnswersParamsInterface) => {
-      const assessmentId = params?.assessmentId ?? '';
-      const criteriaId = params?.criteriaId ?? '';
-      const limit = params?.limit ?? 50;
-      const perPage = params?.perPage ?? 5;
-
-      paramsRef.current = { assessmentId, criteriaId, limit, perPage };
-      limitRef.current = limit;
-      perPageRef.current = perPage;
-
-      cursorsRef.current = [null];
-      lastVisibleRef.current = null;
-
-      subscribePage(1);
-    },
-    [subscribePage]
-  );
-
-  const nextPage = useCallback(() => {
-    const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-    if (page >= max) return;
-    const cursorForNext = cursorsRef.current[page];
-    if (!cursorForNext) {
-      subscribePage(page + 1);
-    } else {
-      subscribePage(page + 1);
     }
-  }, [page, subscribePage]);
-
-  const prevPage = useCallback(() => {
-    if (page <= 1) return;
-    subscribePage(page - 1);
-  }, [page, subscribePage]);
-
-  const resetPagination = useCallback(() => {
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current();
-      unsubscribeRef.current = null;
-    }
-
-    cursorsRef.current = [null];
-    lastVisibleRef.current = null;
-    setAnswersList([]);
-    setPage(1);
-    setIsLoading(false);
   }, []);
 
-  // LOCAL GETTER
-  const getAnswerById = useCallback(
-    (id: string): AnswerInterface | null => {
-      if (!id) return null;
-      return allAnswersCache.find((u) => u.id === id) ?? null;
-    },
-    [allAnswersCache]
-  );
+  const answers = useCallback((params?: AnswersParamsInterface) => {
+    paramsRef.current = { assessmentId: params?.assessmentId ?? '', criteriaId: params?.criteriaId ?? '', limit: params?.limit ?? 50, perPage: params?.perPage ?? 5 };
+    limitRef.current = params?.limit ?? 50;
+    perPageRef.current = params?.perPage ?? 5;
+    subscribePage(1);
+  }, [subscribePage]);
+
+  const maxPages = Math.max(1, Math.ceil((totalCount || limitRef.current || 50) / perPageRef.current));
+  const hasNext = page < maxPages;
+  const hasPrev = page > 1;
+
+  const nextPage = useCallback(() => { if (page < maxPages) subscribePage(page + 1); }, [page, maxPages, subscribePage]);
+  const prevPage = useCallback(() => { if (page > 1) subscribePage(page - 1); }, [page, subscribePage]);
+  const resetPagination = useCallback(() => { setAnswersList([]); setPage(1); setIsLoading(false); }, []);
+
+  const getAnswerById = useCallback((id: string) => allAnswersCache.find((u) => u.id === id) ?? null, [allAnswersCache]);
 
   const fetchAnswerById = useCallback(async (id: string): Promise<AnswerInterface | null> => {
     if (!id) return null;
-    try {
-      const q = query(collection(fbFirestore, 'answers'), where('id', '==', id), fbLimit(1));
-      const snap = await getDocs(q);
-      if (snap.empty) return null;
-      const docSnap = snap.docs[0];
-      return mapAnswer({ id: docSnap.id, ...docSnap.data() });
-    } catch (err) {
-      console.error('fetchAnswerById error', err);
-      return null;
-    }
+    const { data, error } = await supabase.from('answers').select('*').eq('id', id).maybeSingle();
+    if (error || !data) return null;
+    return mapAnswer(data);
   }, []);
 
-  const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
-
-  // CRAETE ANSWERS
   const createAnswer = useCallback(async (payload: PayloadCreateAnswerInterface) => {
     try {
-      const docId = uuidv4();
-
-      await setDoc(doc(fbFirestore, 'answers', docId), {
-        id: docId,
-        ...payload,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-
-      return {
-        id: docId,
-        ...payload,
-      };
-    } catch (error) {
-      throw safeWrapError(error);
-    }
+      const { data, error } = await supabase.from('answers').insert({
+        criteria_id: payload.criteriaId,
+        assessment_id: payload.assessmentId,
+        average_point: payload.averagePoint,
+      }).select().single();
+      if (error) throw error;
+      return { id: data.id, criteriaId: payload.criteriaId, assessmentId: payload.assessmentId, averagePoint: payload.averagePoint };
+    } catch (error) { throw safeWrapError(error); }
   }, []);
 
-  // UPDATE ANSWERS
-  const updateAnswer = useCallback(
-    async (id: string, payload: Partial<Omit<AnswerInterface, 'id' | 'createdAt' | 'updatedAt'>>): Promise<AnswerInterface | null> => {
-      if (!id) return null;
-
-      try {
-        const docRef = doc(fbFirestore, 'answers', id);
-        await updateDoc(docRef, {
-          ...payload,
-          updatedAt: serverTimestamp(),
-        });
-
-        const snap = await getDoc(docRef);
-        if (!snap.exists()) return null;
-
-        const updated = mapAnswer(snap.data());
-
-        setAllAnswersCache((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
-        setAnswersList((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
-
-        return updated;
-      } catch (err) {
-        throw safeWrapError(err);
-      }
-    },
-    [setAllAnswersCache, setAnswersList]
-  );
-
-  // DELETE ANSWERS
-  const deleteAnswer = useCallback(
-    async (id: string): Promise<boolean> => {
-      if (!id) return false;
-
-      try {
-        const docRef = doc(fbFirestore, 'answers', id);
-        await deleteDoc(docRef);
-
-        setAllAnswersCache((prev) => prev.filter((u) => u.id !== id));
-        setAnswersList((prev) => prev.filter((u) => u.id !== id));
-
-        return true;
-      } catch (err) {
-        throw safeWrapError(err);
-      }
-    },
-    [setAllAnswersCache, setAnswersList]
-  );
-
-  // CLEANUP ON UNMONT
-  useEffect(() => {
-    return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-    };
+  const updateAnswer = useCallback(async (id: string, payload: Partial<Omit<AnswerInterface, 'id' | 'createdAt' | 'updatedAt'>>): Promise<AnswerInterface | null> => {
+    if (!id) return null;
+    try {
+      const updateData: any = {};
+      if (payload.criteriaId !== undefined) updateData.criteria_id = payload.criteriaId;
+      if (payload.assessmentId !== undefined) updateData.assessment_id = payload.assessmentId;
+      if (payload.averagePoint !== undefined) updateData.average_point = payload.averagePoint;
+      const { data, error } = await supabase.from('answers').update(updateData).eq('id', id).select().single();
+      if (error) throw error;
+      return mapAnswer(data);
+    } catch (err) { throw safeWrapError(err); }
   }, []);
 
-  const hasNext = page < Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
+  const deleteAnswer = useCallback(async (id: string): Promise<boolean> => {
+    if (!id) return false;
+    try {
+      const { error } = await supabase.from('answers').delete().eq('id', id);
+      if (error) throw error;
+      setAllAnswersCache((prev) => prev.filter((u) => u.id !== id));
+      setAnswersList((prev) => prev.filter((u) => u.id !== id));
+      return true;
+    } catch (err) { throw safeWrapError(err); }
+  }, []);
 
-  const hasPrev = page > 1;
-
-  return {
-    answersList,
-    isLoading,
-    page,
-    perPage: perPageRef.current,
-    maxPages: Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current)),
-    hasNext,
-    hasPrev,
-    answers,
-    nextPage,
-    prevPage,
-    resetPagination,
-    getAnswerById,
-    fetchAnswerById,
-    createAnswer,
-    updateAnswer,
-    deleteAnswer,
-    allAnswersCache,
-  };
+  return { answersList, isLoading, page, perPage: perPageRef.current, maxPages, hasNext, hasPrev, answers, nextPage, prevPage, resetPagination, getAnswerById, fetchAnswerById, createAnswer, updateAnswer, deleteAnswer, allAnswersCache };
 };

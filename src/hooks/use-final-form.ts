@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { collection, query, orderBy, onSnapshot, limit as fbLimit, startAfter, QueryDocumentSnapshot, Timestamp, where, getDocs } from 'firebase/firestore';
-// firebase
-import { fbFirestore } from '/src/firebase';
+// supabase
+import { supabase } from '/src/supabase';
 // interfaces
 import { PayloadCreateCriteriaInterface } from '/src/interfaces/criteria';
 import { PayloadCreateQuestionInterface } from '/src/interfaces/question';
@@ -17,23 +16,18 @@ import { useDatabaseQuestion } from '/src/hooks/use-database-question';
 export interface UseFinalFormInterface {
   finalFormsList: FormInterface[];
   isLoading: boolean;
-  // pagination meta
   page: number;
   perPage: number;
   maxPages: number;
   hasNext: boolean;
   hasPrev: boolean;
-  // controls
   finalForms: (params?: FinalFormsParamsInterface) => void;
   nextPage: () => void;
   prevPage: () => void;
   resetPagination: () => void;
-  // helpers
   getFinalFormById: (id: string) => FormInterface | null;
   fetchFinalFormById: (id: string) => Promise<FinalFormInterface | null>;
-  // raw
   allFinalFormsCache: FormInterface[];
-  //
   createFinalForm: (payload: PayloadCreateFinalFormInterface) => Promise<FormInterface | null>;
   updateFinalForm: (id: string, payload: Partial<Omit<FormInterface, 'id' | 'createdAt' | 'updatedAt'>>, currentFinalForm: FinalFormInterface) => Promise<FormInterface | null>;
   deleteFinalForm: (id: string) => Promise<boolean>;
@@ -43,13 +37,13 @@ export interface UseFinalFormInterface {
 
 const mapForm = (data: any): FormInterface => ({
   id: data.id,
-  createdBy: data.createdBy,
+  createdBy: data.created_by ?? data.createdBy,
   title: data.title,
-  class: data.class,
+  class: data.class ?? [],
   description: data.description,
   notes: data.notes,
-  createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(data.createdAt),
-  updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(data.updatedAt),
+  createdAt: data.created_at ? new Date(data.created_at) : new Date(),
+  updatedAt: data.updated_at ? new Date(data.updated_at) : new Date(),
 });
 
 const alphabet = Array.from(Array(26)).map((_, i) => String.fromCharCode(i + 97));
@@ -58,122 +52,64 @@ const alphabet = Array.from(Array(26)).map((_, i) => String.fromCharCode(i + 97)
 
 export const useFinalForm = (): UseFinalFormInterface => {
   const [allFinalFormsCache, setAllFinalFormsCache] = useState<FormInterface[]>([]);
-
   const [finalFormsList, setFinalFormsList] = useState<FormInterface[]>([]);
-
   const [isLoading, setIsLoading] = useState<boolean>(false);
-
   const [page, setPage] = useState<number>(1);
+  const [totalCount, setTotalCount] = useState<number>(0);
 
   const perPageRef = useRef<number>(5);
-
   const limitRef = useRef<number>(50);
-
-  const cursorsRef = useRef<QueryDocumentSnapshot<any>[] | null[]>([null]);
-
-  const lastVisibleRef = useRef<QueryDocumentSnapshot<any> | null>(null);
-
   const paramsRef = useRef<FinalFormsParamsInterface>({ class: '', limit: 50, perPage: 5 });
 
-  const unsubscribeRef = useRef<(() => void) | null>(null);
-
   const { createForm, allFormsCache: formsCacheFromHook, deleteForm, fetchFormById, updateForm, getFormById } = useDatabaseForm();
-
   const { createCriteria, allCriteriasCache, deleteCriteria, updateCriteria } = useDatabaseCriteria();
-
   const { createQuestion, allQuestionsCache, deleteQuestion, updateQuestion } = useDatabaseQuestion();
 
-  // sync
+  // sync from hook
   useEffect(() => {
     if (Array.isArray(formsCacheFromHook)) {
       setAllFinalFormsCache(formsCacheFromHook);
     }
   }, [formsCacheFromHook]);
 
-  // ALL FORM CACHE
-  useEffect(() => {
-    const q = query(collection(fbFirestore, 'forms'), orderBy('createdAt'));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const arr: FormInterface[] = [];
-        snap.forEach((d) => arr.push(mapForm({ id: d.id, ...d.data() })));
-        setAllFinalFormsCache(arr);
-      },
-      (err) => {
-        console.error('allFinalFormsCache snapshot error', err);
-        setAllFinalFormsCache([]);
-      }
-    );
+  const subscribePage = useCallback(async (pageIndex: number) => {
+    const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
+    if (pageIndex < 1 || pageIndex > max) return;
 
-    return () => {
-      unsub();
-      setAllFinalFormsCache([]);
-    };
-  }, []);
+    setIsLoading(true);
 
-  const buildQueryForPage = useCallback((pageIndex: number) => {
-    const { class: classFilter } = paramsRef.current;
-    const pageSize = perPageRef.current;
+    try {
+      const { class: classFilter } = paramsRef.current;
+      const pageSize = perPageRef.current;
+      const from = (pageIndex - 1) * pageSize;
+      const to = from + pageSize - 1;
 
-    const collectionRef = collection(fbFirestore, 'forms');
-    const qParts: any[] = [];
+      let q = supabase.from('forms').select('*', { count: 'exact' });
 
-    if (classFilter) qParts.push(where('class', '==', classFilter));
-
-    qParts.push(orderBy('createdAt', 'desc'));
-
-    if (pageIndex > 1) {
-      const cursor = cursorsRef.current[pageIndex - 1] ?? null;
-      if (cursor) {
-        qParts.push(startAfter(cursor));
-      }
-    }
-
-    qParts.push(fbLimit(pageSize));
-
-    return query(collectionRef, ...qParts);
-  }, []);
-
-  const subscribePage = useCallback(
-    (pageIndex: number) => {
-      const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-      if (pageIndex < 1 || pageIndex > max) return;
-
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
+      if (classFilter) {
+        q = q.contains('class', [classFilter]);
       }
 
-      setIsLoading(true);
-      const q = buildQueryForPage(pageIndex);
+      q = q.order('created_at', { ascending: false }).range(from, to);
 
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          const list: FormInterface[] = [];
-          snap.forEach((d) => {
-            list.push(mapForm({ id: d.id, ...d.data() }));
-          });
+      const { data, count, error } = await q;
 
-          setFinalFormsList(list);
-          setIsLoading(false);
+      if (error) {
+        console.error('paginate fetch error', error.code, error.message);
+        setIsLoading(false);
+        return;
+      }
 
-          const last = snap.docs[snap.docs.length - 1] ?? null;
-          lastVisibleRef.current = last || null;
-          cursorsRef.current[pageIndex] = last || null;
-        },
-        (err) => {
-          console.error('paginate snapshot error', err.code, err.message);
-          setIsLoading(false);
-        }
-      );
-
-      unsubscribeRef.current = unsub;
+      const list = (data ?? []).map(mapForm);
+      setFinalFormsList(list);
+      if (count !== null) setTotalCount(count);
       setPage(pageIndex);
-    },
-    [buildQueryForPage]
-  );
+    } catch (err) {
+      console.error('paginate snapshot error', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   const finalForms = useCallback(
     (params?: FinalFormsParamsInterface) => {
@@ -184,9 +120,6 @@ export const useFinalForm = (): UseFinalFormInterface => {
       paramsRef.current = { class: classFilter, limit, perPage };
       limitRef.current = limit;
       perPageRef.current = perPage;
-
-      cursorsRef.current = [null];
-      lastVisibleRef.current = null;
 
       subscribePage(1);
     },
@@ -205,18 +138,11 @@ export const useFinalForm = (): UseFinalFormInterface => {
   }, [page, subscribePage]);
 
   const resetPagination = useCallback(() => {
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current();
-      unsubscribeRef.current = null;
-    }
-    cursorsRef.current = [null];
-    lastVisibleRef.current = null;
     setFinalFormsList([]);
     setPage(1);
     setIsLoading(false);
   }, []);
 
-  // LOCAL GETTER
   const getFinalFormById = useCallback(
     (id: string): FormInterface | null => {
       if (!id) return null;
@@ -225,15 +151,13 @@ export const useFinalForm = (): UseFinalFormInterface => {
     [allFinalFormsCache, getFormById]
   );
 
-  // FORMAT TIME
   const formatTimestamp = (value: any): string => {
-    const date = value && typeof value.toDate === 'function' ? value.toDate() : value instanceof Date ? value : new Date(value);
+    const date = value instanceof Date ? value : new Date(value);
     const datePart = date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Jakarta' } as any);
     const timePart = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Jakarta' } as any);
     return `${datePart} at ${timePart} UTC+7`;
   };
 
-  // FETCH FINAL FORM
   const fetchFinalFormById = useCallback(
     async (id: string): Promise<FinalFormInterface | null> => {
       if (!id) return null;
@@ -242,40 +166,48 @@ export const useFinalForm = (): UseFinalFormInterface => {
         const form = await fetchFormById(id);
         if (!form?.id) return null;
 
-        const criteriaSnap = await getDocs(query(collection(fbFirestore, 'criterias'), where('formId', '==', id)));
-        const criteriasRaw = criteriaSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+        const { data: criteriasRaw, error: critErr } = await supabase
+          .from('criterias')
+          .select('*')
+          .eq('form_id', id);
+
+        if (critErr) throw critErr;
 
         const criteriasWithQuestions = await Promise.all(
-          criteriasRaw.map(async (c) => {
-            const qSnap = await getDocs(query(collection(fbFirestore, 'questions'), where('criteriaId', '==', c.id)));
-            const questionsRaw = qSnap.docs.map((qD) => ({ id: qD.id, ...(qD.data() as any) }));
+          (criteriasRaw ?? []).map(async (c: any) => {
+            const { data: questionsRaw, error: qErr } = await supabase
+              .from('questions')
+              .select('*')
+              .eq('criteria_id', c.id)
+              .order('order_num', { ascending: true });
 
-            const questionsSorted = questionsRaw
-              .slice()
-              .sort((a: any, b: any) => {
-                if (typeof a.order === 'number' && typeof b.order === 'number') return a.order - b.order;
-                const aa = a.createdAt && typeof a.createdAt.toDate === 'function' ? a.createdAt.toDate().getTime() : new Date(a.createdAt ?? 0).getTime();
-                const bb = b.createdAt && typeof b.createdAt.toDate === 'function' ? b.createdAt.toDate().getTime() : new Date(b.createdAt ?? 0).getTime();
-                return aa - bb;
-              })
-              .map((q: any, i: number) => ({
-                ...q,
-                order: i + 1,
-                createdAt: formatTimestamp(q.createdAt),
-                updatedAt: formatTimestamp(q.updatedAt),
-              }));
+            if (qErr) throw qErr;
+
+            const questionsSorted = (questionsRaw ?? []).map((q: any, i: number) => ({
+              id: q.id,
+              criteriaId: q.criteria_id,
+              text: q.text,
+              order: q.order_num ?? i + 1,
+              createdAt: formatTimestamp(q.created_at),
+              updatedAt: formatTimestamp(q.updated_at),
+            }));
 
             return {
-              ...c,
+              id: c.id,
+              formId: c.form_id,
+              title: c.title,
+              description: c.description,
+              weight: c.weight,
               questions: questionsSorted,
-              createdAt: formatTimestamp(c.createdAt),
-              updatedAt: formatTimestamp(c.updatedAt),
+              createdAt: formatTimestamp(c.created_at),
+              updatedAt: formatTimestamp(c.updated_at),
             };
           })
         );
 
-        // SORT CRITERIAS BY TITLE
-        const criteriasSortedByTitle = criteriasWithQuestions.slice().sort((a: any, b: any) => String(a.title ?? '').localeCompare(String(b.title ?? ''), 'en', { sensitivity: 'base' }));
+        const criteriasSortedByTitle = criteriasWithQuestions.slice().sort((a: any, b: any) =>
+          String(a.title ?? '').localeCompare(String(b.title ?? ''), 'en', { sensitivity: 'base' })
+        );
 
         return {
           ...form,
@@ -293,7 +225,6 @@ export const useFinalForm = (): UseFinalFormInterface => {
 
   const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
-  // CREATE FINAL FORM
   const createFinalForm = useCallback(
     async (payload: PayloadCreateFinalFormInterface) => {
       try {
@@ -336,7 +267,6 @@ export const useFinalForm = (): UseFinalFormInterface => {
     [createForm, createCriteria, createQuestion, fetchFormById]
   );
 
-  // UPDATE FINAL FORM
   const updateFinalForm = useCallback(
     async (id: string, payload: Partial<Omit<FormInterface, 'id' | 'createdAt' | 'updatedAt'>>, currentFinalForm?: FinalFormInterface) => {
       if (!id) return null;
@@ -366,7 +296,6 @@ export const useFinalForm = (): UseFinalFormInterface => {
         for (const [cIdx, pc] of payloadCriterias.entries()) {
           const { id: payloadCritId, questions: payloadQuestions = [], ...criteriaFields } = pc as any;
 
-          // CASE A: update existing criteria
           if (payloadCritId) {
             const critUpdate: Record<string, any> = {};
             for (const k of Object.keys(criteriaFields)) {
@@ -396,7 +325,6 @@ export const useFinalForm = (): UseFinalFormInterface => {
                       await updateQuestion(payloadQId, qUpdate);
                     }
                   } else {
-                    // create question for this existing criteria
                     await createQuestion({
                       ...qFields,
                       order,
@@ -409,7 +337,6 @@ export const useFinalForm = (): UseFinalFormInterface => {
             continue;
           }
 
-          // CASE B: create new criteria + questions
           const createdCrit = await createCriteria({
             ...criteriaFields,
             title: criteriaFields.title ?? alphabet?.[cIdx] ?? `g${cIdx + 1}`,
@@ -439,8 +366,9 @@ export const useFinalForm = (): UseFinalFormInterface => {
           try {
             setAllFinalFormsCache((prev: any[]) => prev.map((u) => (u.id === updated.id ? updated : u)));
             setFinalFormsList((prev: any[]) => prev.map((u) => (u.id === updated.id ? updated : u)));
-            // eslint-disable-next-line no-empty
-          } catch (e) {}
+          } catch {
+            // ignore
+          }
         }
 
         return updated;
@@ -448,10 +376,9 @@ export const useFinalForm = (): UseFinalFormInterface => {
         throw safeWrapError(err);
       }
     },
-    [updateForm, fetchFormById, createCriteria, updateCriteria, createQuestion, updateQuestion, setAllFinalFormsCache, setFinalFormsList]
+    [updateForm, fetchFormById, createCriteria, updateCriteria, createQuestion, updateQuestion]
   );
 
-  // DELETE FINAL FORM
   const deleteFinalForm = useCallback(
     async (id: string): Promise<boolean> => {
       if (!id) return false;
@@ -479,17 +406,8 @@ export const useFinalForm = (): UseFinalFormInterface => {
     [allCriteriasCache, allQuestionsCache, deleteQuestion, deleteCriteria, deleteForm]
   );
 
-  // CLEANUP ON UNMONT
-  useEffect(() => {
-    return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-    };
-  }, []);
-
-  const hasNext = page < Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
+  const maxPages = Math.max(1, Math.ceil((totalCount || limitRef.current || 50) / perPageRef.current));
+  const hasNext = page < maxPages;
   const hasPrev = page > 1;
 
   return {
@@ -497,7 +415,7 @@ export const useFinalForm = (): UseFinalFormInterface => {
     isLoading,
     page,
     perPage: perPageRef.current,
-    maxPages: Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current)),
+    maxPages,
     hasNext,
     hasPrev,
     finalForms,

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
-// firebase
-import { fbFirestore } from '/src/firebase';
+// supabase
+import { supabase } from '/src/supabase';
 // interfaces
 import { TeacherAttendanceInterface, TeacherAttendanceStatus } from '/src/interfaces/attendance';
 import { UserInterface } from '/src/interfaces/user';
@@ -15,6 +14,19 @@ interface UseDatabaseAttendanceInterface {
 }
 
 const getAttendanceId = (teacherId: string, date: string) => `${teacherId}_${date}`;
+
+const mapAttendance = (data: any): TeacherAttendanceInterface => ({
+  id: data.id,
+  teacherId: data.teacher_id ?? data.teacherId,
+  teacherName: data.teacher_name ?? data.teacherName,
+  date: data.date,
+  status: data.status,
+  note: data.note ?? '',
+  isVerified: data.is_verified ?? data.isVerified ?? false,
+  verifiedBy: data.verified_by ?? data.verifiedBy ?? null,
+  verifiedByName: data.verified_by_name ?? data.verifiedByName ?? null,
+  verifiedAt: data.verified_at ? new Date(data.verified_at) : (data.verifiedAt ?? null),
+});
 
 export const useDatabaseAttendance = (teacher: UserInterface | null, date: string): UseDatabaseAttendanceInterface => {
   const [attendance, setAttendance] = useState<TeacherAttendanceInterface | null>(null);
@@ -37,10 +49,16 @@ export const useDatabaseAttendance = (teacher: UserInterface | null, date: strin
 
       try {
         const attendanceId = getAttendanceId(teacherId, date);
-        const snapshot = await getDoc(doc(fbFirestore, 'teacherAttendances', attendanceId));
+        const { data, error: loadErr } = await supabase
+          .from('teacher_attendances')
+          .select('*')
+          .eq('id', attendanceId)
+          .maybeSingle();
+
+        if (loadErr) throw loadErr;
 
         if (isCurrent) {
-          setAttendance(snapshot.exists() ? (snapshot.data() as TeacherAttendanceInterface) : null);
+          setAttendance(data ? mapAttendance(data) : null);
         }
       } catch (loadError) {
         console.error('Failed to load teacher attendance', loadError);
@@ -65,7 +83,28 @@ export const useDatabaseAttendance = (teacher: UserInterface | null, date: strin
       setIsSaving(true);
       try {
         const id = getAttendanceId(teacherId, date);
-        const attendanceData = {
+        const payload = {
+          id,
+          teacher_id: teacherId,
+          teacher_name: teacher.name,
+          date,
+          status,
+          note: status === 'absent' ? note.trim() : '',
+          is_verified: false,
+          verified_by: null,
+          verified_by_name: null,
+          verified_at: null,
+        };
+
+        const { data, error: upsertErr } = await supabase
+          .from('teacher_attendances')
+          .upsert(payload, { onConflict: 'id' })
+          .select()
+          .single();
+
+        if (upsertErr) throw upsertErr;
+
+        setAttendance(data ? mapAttendance(data) : {
           id,
           teacherId,
           teacherName: teacher.name,
@@ -76,27 +115,12 @@ export const useDatabaseAttendance = (teacher: UserInterface | null, date: strin
           verifiedBy: null,
           verifiedByName: null,
           verifiedAt: null,
-          updatedAt: serverTimestamp(),
-        };
-
-        await setDoc(
-          doc(fbFirestore, 'teacherAttendances', id),
-          {
-            ...attendanceData,
-            ...(!attendance ? { createdAt: serverTimestamp() } : {}),
-          },
-          { merge: true }
-        );
-
-        setAttendance({
-          ...attendanceData,
-          note: status === 'absent' ? note.trim() : '',
         });
       } finally {
         setIsSaving(false);
       }
     },
-    [attendance, date, teacher, teacherId]
+    [date, teacher, teacherId]
   );
 
   return { attendance, isLoading, isSaving, error, saveAttendance };

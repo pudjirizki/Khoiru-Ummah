@@ -1,9 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { collection, query, where, onSnapshot, orderBy, getDocs, limit as fbLimit, startAfter, QueryDocumentSnapshot, Timestamp, getCountFromServer } from 'firebase/firestore';
 // context
 import { useUserContext } from '/src/context/user';
-// firebase
-import { fbFirestore } from '/src/firebase';
+// supabase
+import { supabase } from '/src/supabase';
 // interfaces
 import { CurrentUserInterface, UserInterface, RoleUserType, UsersParamsInterface } from '/src/interfaces/user';
 // config-global
@@ -16,24 +15,20 @@ import { fDecrypt } from '/src/utils/format-encrypt';
 export interface UseDatabaseUserInterface {
   usersList: UserInterface[];
   isLoadingUsers: boolean;
-  // pagination meta
   page: number;
   perPage: number;
   maxPages: number;
   hasNext: boolean;
   hasPrev: boolean;
   totalCount: number;
-  // controls
   users: (params?: UsersParamsInterface) => void;
   nextPage: () => void;
   prevPage: () => void;
   resetPagination: () => void;
   subscribePage: (pageIndex: number) => void;
-  // helpers
-  getUserById: (id: string) => UserInterface | null; // local
-  fetchUserById: (id: string) => Promise<UserInterface | null>; // cloud
-  // current user & raw
-  allUsersCache: UserInterface[]; // optional cache maintained by a background listener (kept small cost)
+  getUserById: (id: string) => UserInterface | null;
+  fetchUserById: (id: string) => Promise<UserInterface | null>;
+  allUsersCache: UserInterface[];
   currentUser: CurrentUserInterface | null;
   isLoadingUser: boolean;
 }
@@ -42,224 +37,200 @@ export interface UseDatabaseUserInterface {
 
 const mapUser = (data: any): UserInterface => ({
   id: data.id,
-  authId: data.authId,
+  authId: data.auth_id ?? data.authId,
   name: data.name,
-  nameLowercase: data.nameLowercase,
-  phoneNumber: data.phoneNumber,
+  nameLowercase: data.name_lowercase ?? data.nameLowercase ?? data.name?.toLowerCase(),
+  phoneNumber: data.phone_number ?? data.phoneNumber,
   role: data.role as RoleUserType,
   email: data.email,
   status: data.status,
-  createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(data.createdAt),
-  updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(data.updatedAt),
+  createdAt: data.created_at ? new Date(data.created_at) : new Date(),
+  updatedAt: data.updated_at ? new Date(data.updated_at) : new Date(),
 });
 
 // ----------------------------------------------------------------------
 
 export const useDatabaseUser = (): UseDatabaseUserInterface => {
   const [allUsersCache, setAllUsersCache] = useState<UserInterface[]>([]);
-
   const [usersList, setUsersList] = useState<UserInterface[]>([]);
-
   const [isLoadingUsers, setIsLoadingUsers] = useState<boolean>(false);
-
   const [page, setPage] = useState<number>(1);
-
   const [currentUser, setCurrentUser] = useState<CurrentUserInterface | null>(null);
-
   const [isLoadingUser, setIsLoadingUser] = useState<boolean>(true);
-
   const [totalCount, setTotalCount] = useState<number>(0);
 
   const perPageRef = useRef<number>(5);
-
   const limitRef = useRef<number>(50);
-
-  const cursorsRef = useRef<QueryDocumentSnapshot<any>[] | null[]>([null]);
-
-  const lastVisibleRef = useRef<QueryDocumentSnapshot<any> | null>(null);
-
   const paramsRef = useRef<UsersParamsInterface>({ search: '', role: null, status: null, limit: 50, perPage: 5 });
-
-  const unsubscribeRef = useRef<(() => void) | null>(null);
 
   const { user } = useUserContext();
 
-  // ALL USER CACHE
+  // ALL USER CACHE + REALTIME
   useEffect(() => {
-    const q = query(collection(fbFirestore, 'users'), orderBy('createdAt'));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const arr: UserInterface[] = [];
-        snap.forEach((d) => arr.push(mapUser(d.data())));
-        setAllUsersCache(arr);
-      },
-      (err) => {
-        console.error('allUsersCache snapshot error', err);
-        setAllUsersCache([]);
+    let isMounted = true;
+
+    const fetchAll = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('allUsersCache fetch error', error);
+        if (isMounted) setAllUsersCache([]);
+        return;
       }
-    );
+
+      if (isMounted && data) {
+        setAllUsersCache(data.map(mapUser));
+      }
+    };
+
+    fetchAll();
+
+    const channel = supabase
+      .channel('public:users_all_cache')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'users' },
+        () => {
+          fetchAll();
+        }
+      )
+      .subscribe();
 
     return () => {
-      unsub();
+      isMounted = false;
+      supabase.removeChannel(channel);
       setAllUsersCache([]);
     };
   }, []);
 
-  // CURRENT USER
+  // CURRENT USER + REALTIME
   useEffect(() => {
-    let unsubCurrent: (() => void) | null = null;
+    let isMounted = true;
     let fallbackTimeout: ReturnType<typeof setTimeout> | null = null;
 
     if (!user) {
-      fallbackTimeout = setTimeout(() => setIsLoadingUser(false), 3000);
+      fallbackTimeout = setTimeout(() => {
+        if (isMounted) setIsLoadingUser(false);
+      }, 1500);
       return () => {
         if (fallbackTimeout) clearTimeout(fallbackTimeout);
       };
     }
 
-    try {
-      const userDecrypted = fDecrypt(user, USER_KEY) as CurrentUserInterface;
+    let authId = '';
+    let userDecrypted: CurrentUserInterface | null = null;
 
-      if (userDecrypted?.uid) {
-        const q = query(collection(fbFirestore, 'users'), where('authId', '==', userDecrypted.uid));
-        unsubCurrent = onSnapshot(
-          q,
-          (snap) => {
-            if (snap.empty) {
-              setCurrentUser({ ...userDecrypted, databaseUsers: null });
-            } else {
-              const doc = snap.docs[0];
-              setCurrentUser({ ...userDecrypted, databaseUsers: mapUser(doc.data()) });
-            }
-            setIsLoadingUser(false);
-          },
-          (err) => {
-            console.error('currentUser snapshot error', err);
-            setIsLoadingUser(false);
-          }
-        );
-      } else {
-        setCurrentUser({ ...userDecrypted, databaseUsers: null });
-        setIsLoadingUser(false);
-      }
+    try {
+      userDecrypted = fDecrypt(user, USER_KEY) as CurrentUserInterface;
+      authId = userDecrypted?.uid || userDecrypted?.id || '';
     } catch (err) {
       console.error('decrypt current user error', err);
       setCurrentUser(null);
       setIsLoadingUser(false);
+      return;
     }
 
-    return () => {
-      if (unsubCurrent) unsubCurrent();
-    };
-  }, [user]);
-
-  const buildQueryForPage = useCallback((pageIndex: number) => {
-    const { role, status, search } = paramsRef.current;
-    const pageSize = perPageRef.current;
-
-    const qParts: any[] = [];
-
-    if (role) {
-      qParts.push(where('role', '==', role));
+    if (!authId) {
+      setCurrentUser(userDecrypted);
+      setIsLoadingUser(false);
+      return;
     }
 
-    if (status) {
-      qParts.push(where('status', '==', status));
-    }
+    const fetchCurrent = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('auth_id', authId)
+        .maybeSingle();
 
-    if (search) {
-      const keyword = search.toLowerCase().trim();
-      qParts.push(orderBy('nameLowercase'));
-      qParts.push(where('nameLowercase', '>=', keyword));
-      qParts.push(where('nameLowercase', '<=', keyword + '\uf8ff'));
-    } else {
-      qParts.push(orderBy('createdAt', 'desc'));
-    }
+      if (!isMounted) return;
 
-    if (pageIndex > 1) {
-      const cursor = cursorsRef.current[pageIndex - 1];
-      if (cursor) qParts.push(startAfter(cursor));
-    }
-
-    qParts.push(fbLimit(pageSize));
-
-    return query(collection(fbFirestore, 'users'), ...qParts);
-  }, []);
-
-  const subscribePage = useCallback(
-    (pageIndex: number) => {
-      const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-      if (pageIndex < 1 || pageIndex > max) return;
-
-      // cleanup previous subscription
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
+      if (error) {
+        console.error('currentUser fetch error', error);
       }
 
-      setIsLoadingUsers(true);
+      if (data) {
+        setCurrentUser({ ...userDecrypted, databaseUsers: mapUser(data) });
+      } else {
+        setCurrentUser({ ...userDecrypted, databaseUsers: null });
+      }
+      setIsLoadingUser(false);
+    };
 
-      const q = buildQueryForPage(pageIndex);
+    fetchCurrent();
 
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          console.info('[paginate snapshot] page', pageIndex, 'size', snap.size);
-          const list: UserInterface[] = [];
-          snap.forEach((d) => {
-            list.push(mapUser(d.data()));
-          });
-
-          setUsersList(list);
-          setIsLoadingUsers(false);
-
-          const last = snap.docs[snap.docs.length - 1] ?? null;
-          lastVisibleRef.current = last || null;
-          cursorsRef.current[pageIndex] = last || null;
-        },
-        (err) => {
-          console.error('paginate snapshot error', err.code, err.message);
-          setIsLoadingUsers(false);
+    const channel = supabase
+      .channel(`public:users_${authId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'users', filter: `auth_id=eq.${authId}` },
+        (payload) => {
+          if (!isMounted) return;
+          if (payload.new) {
+            setCurrentUser({ ...userDecrypted, databaseUsers: mapUser(payload.new) });
+          } else if (payload.eventType === 'DELETE') {
+            setCurrentUser({ ...userDecrypted, databaseUsers: null });
+          }
         }
-      );
+      )
+      .subscribe();
 
-      unsubscribeRef.current = unsub;
-      setPage(pageIndex);
-    },
-    [buildQueryForPage]
-  );
+    return () => {
+      isMounted = false;
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
 
   const fetchTotalCount = useCallback(async () => {
     try {
       const { role, status, search } = paramsRef.current;
+      let q = supabase.from('users').select('*', { count: 'exact', head: true });
 
-      const constraints: any[] = [];
+      if (role) q = q.eq('role', role);
+      if (status) q = q.eq('status', status);
+      if (search) q = q.ilike('name', `%${search.trim()}%`);
 
-      if (role) {
-        constraints.push(where('role', '==', role));
-      }
-
-      if (status) {
-        constraints.push(where('status', '==', status));
-      }
-
-      if (search) {
-        const keyword = search.toLowerCase().trim();
-        constraints.push(orderBy('nameLowercase'));
-        constraints.push(where('nameLowercase', '>=', keyword));
-        constraints.push(where('nameLowercase', '<=', keyword + '\uf8ff'));
-      }
-
-      const q = query(collection(fbFirestore, 'users'), ...constraints);
-
-      const countSnap = await getCountFromServer(q);
-      const total = Number(countSnap.data().count ?? 0);
-
-      setTotalCount(total);
+      const { count, error } = await q;
+      if (error) throw error;
+      setTotalCount(count ?? 0);
     } catch (err) {
       console.error('fetchTotalCount error', err);
       setTotalCount(0);
+    }
+  }, []);
+
+  const subscribePage = useCallback(async (pageIndex: number) => {
+    const pageSize = perPageRef.current;
+    const from = (pageIndex - 1) * pageSize;
+    const to = from + pageSize - 1;
+
+    setIsLoadingUsers(true);
+
+    try {
+      const { role, status, search } = paramsRef.current;
+      let q = supabase.from('users').select('*', { count: 'exact' });
+
+      if (role) q = q.eq('role', role);
+      if (status) q = q.eq('status', status);
+      if (search) q = q.ilike('name', `%${search.trim()}%`);
+
+      q = q.order('created_at', { ascending: false }).range(from, to);
+
+      const { data, count, error } = await q;
+
+      if (error) throw error;
+
+      setUsersList((data || []).map(mapUser));
+      if (count !== null) setTotalCount(count);
+      setPage(pageIndex);
+    } catch (err) {
+      console.error('paginate fetch error', err);
+      setUsersList([]);
+    } finally {
+      setIsLoadingUsers(false);
     }
   }, []);
 
@@ -275,25 +246,17 @@ export const useDatabaseUser = (): UseDatabaseUserInterface => {
       limitRef.current = limit;
       perPageRef.current = perPage;
 
-      cursorsRef.current = [null];
-      lastVisibleRef.current = null;
-
       fetchTotalCount();
-
       subscribePage(1);
     },
     [subscribePage, fetchTotalCount]
   );
+
   const nextPage = useCallback(() => {
-    const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
+    const max = Math.max(1, Math.ceil((totalCount || limitRef.current || 50) / perPageRef.current));
     if (page >= max) return;
-    const cursorForNext = cursorsRef.current[page];
-    if (!cursorForNext) {
-      subscribePage(page + 1);
-    } else {
-      subscribePage(page + 1);
-    }
-  }, [page, subscribePage]);
+    subscribePage(page + 1);
+  }, [page, totalCount, subscribePage]);
 
   const prevPage = useCallback(() => {
     if (page <= 1) return;
@@ -301,19 +264,11 @@ export const useDatabaseUser = (): UseDatabaseUserInterface => {
   }, [page, subscribePage]);
 
   const resetPagination = useCallback(() => {
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current();
-      unsubscribeRef.current = null;
-    }
-
-    cursorsRef.current = [null];
-    lastVisibleRef.current = null;
     setUsersList([]);
     setPage(1);
     setIsLoadingUsers(false);
   }, []);
 
-  // LOCAL GETTER
   const getUserById = useCallback(
     (id: string): UserInterface | null => {
       if (!id) return null;
@@ -325,31 +280,17 @@ export const useDatabaseUser = (): UseDatabaseUserInterface => {
   const fetchUserById = useCallback(async (id: string): Promise<UserInterface | null> => {
     if (!id) return null;
     try {
-      const q = query(collection(fbFirestore, 'users'), where('id', '==', id), fbLimit(1));
-      const snap = await getDocs(q);
-      if (snap.empty) return null;
-      const doc = snap.docs[0];
-      return mapUser(doc.data());
+      const { data, error } = await supabase.from('users').select('*').eq('id', id).maybeSingle();
+      if (error || !data) return null;
+      return mapUser(data);
     } catch (err) {
       console.error('fetchUserById error', err);
       return null;
     }
   }, []);
 
-  // CLEANUP ON UNMONT
-  useEffect(() => {
-    return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-    };
-  }, []);
-
   const maxPages = Math.max(1, Math.ceil((totalCount || limitRef.current || 50) / perPageRef.current));
-
   const hasNext = page < maxPages;
-
   const hasPrev = page > 1;
 
   return {
@@ -357,7 +298,7 @@ export const useDatabaseUser = (): UseDatabaseUserInterface => {
     isLoadingUsers,
     page,
     perPage: perPageRef.current,
-    maxPages: Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current)),
+    maxPages,
     hasNext,
     hasPrev,
     users,

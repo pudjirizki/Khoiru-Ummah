@@ -1,25 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  orderBy,
-  getDocs,
-  limit as fbLimit,
-  startAfter,
-  QueryDocumentSnapshot,
-  Timestamp,
-  updateDoc,
-  serverTimestamp,
-  getDoc,
-  deleteDoc,
-  doc,
-  setDoc,
-} from 'firebase/firestore';
-import { v4 as uuidv4 } from 'uuid';
-// firebase
-import { fbFirestore } from '/src/firebase';
+// supabase
+import { supabase } from '/src/supabase';
 // interfaces
 import { QuestionInterface, PayloadCreateQuestionInterface, QuestionsParamsInterface } from '/src/interfaces/question';
 
@@ -28,23 +9,18 @@ import { QuestionInterface, PayloadCreateQuestionInterface, QuestionsParamsInter
 export interface UseDatabaseQuestionInterface {
   questionsList: QuestionInterface[];
   isLoading: boolean;
-  // pagination meta
   page: number;
   perPage: number;
   maxPages: number;
   hasNext: boolean;
   hasPrev: boolean;
-  // controls
   questions: (params?: QuestionsParamsInterface) => void;
   nextPage: () => void;
   prevPage: () => void;
   resetPagination: () => void;
-  // helpers
-  getQuestionById: (id: string) => QuestionInterface | null; // local
-  fetchQuestionById: (id: string) => Promise<QuestionInterface | null>; // cloud
-  // raw
-  allQuestionsCache: QuestionInterface[]; // optional cache maintained by a background listener (kept small cost)
-  //
+  getQuestionById: (id: string) => QuestionInterface | null;
+  fetchQuestionById: (id: string) => Promise<QuestionInterface | null>;
+  allQuestionsCache: QuestionInterface[];
   createQuestion: (payload: PayloadCreateQuestionInterface) => Promise<{
     criteriaId: string;
     order: number;
@@ -59,122 +35,110 @@ export interface UseDatabaseQuestionInterface {
 
 const mapQuestion = (data: any): QuestionInterface => ({
   id: data.id,
-  criteriaId: data.criteriaId,
-  order: data.order,
+  criteriaId: data.criteria_id ?? data.criteriaId,
+  order: Number(data.order_num ?? data.order ?? 0),
   text: data.text,
-  createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(data.createdAt),
-  updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(data.updatedAt),
+  createdAt: data.created_at ? new Date(data.created_at) : new Date(),
+  updatedAt: data.updated_at ? new Date(data.updated_at) : new Date(),
 });
 
 // ----------------------------------------------------------------------
 
 export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
   const [allQuestionsCache, setAllQuestionsCache] = useState<QuestionInterface[]>([]);
-
   const [questionsList, setQuestionsList] = useState<QuestionInterface[]>([]);
-
   const [isLoading, setIsLoading] = useState<boolean>(false);
-
   const [page, setPage] = useState<number>(1);
+  const [totalCount, setTotalCount] = useState<number>(0);
 
   const perPageRef = useRef<number>(5);
-
   const limitRef = useRef<number>(50);
-
-  const cursorsRef = useRef<QueryDocumentSnapshot<any>[] | null[]>([null]);
-
-  const lastVisibleRef = useRef<QueryDocumentSnapshot<any> | null>(null);
-
   const paramsRef = useRef<QuestionsParamsInterface>({ criteriaId: '', limit: 50, perPage: 5 });
 
-  const unsubscribeRef = useRef<(() => void) | null>(null);
-
-  // ALL QUESTION CACHE
+  // ALL QUESTION CACHE (fetch + Supabase Realtime channel)
   useEffect(() => {
-    const q = query(collection(fbFirestore, 'questions'), orderBy('createdAt'));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const arr: QuestionInterface[] = [];
-        snap.forEach((d) => arr.push(mapQuestion({ id: d.id, ...d.data() })));
-        setAllQuestionsCache(arr);
-      },
-      (err) => {
-        console.error('allQuestionsCache snapshot error', err);
-        setAllQuestionsCache([]);
+    let isMounted = true;
+
+    const fetchAll = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('questions')
+          .select('*')
+          .order('order_num', { ascending: true });
+
+        if (error) {
+          console.error('allQuestionsCache fetch error', error);
+          if (isMounted) setAllQuestionsCache([]);
+          return;
+        }
+
+        if (isMounted) setAllQuestionsCache((data ?? []).map(mapQuestion));
+      } catch (err) {
+        console.error('allQuestionsCache fetch error', err);
+        if (isMounted) setAllQuestionsCache([]);
       }
-    );
+    };
+
+    fetchAll();
+
+    const channel = supabase
+      .channel('questions-cache')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'questions' }, () => {
+        fetchAll();
+      })
+      .subscribe();
 
     return () => {
-      unsub();
+      isMounted = false;
+      supabase.removeChannel(channel);
       setAllQuestionsCache([]);
     };
   }, []);
 
-  const buildQueryForPage = useCallback((pageIndex: number) => {
-    const { criteriaId } = paramsRef.current;
-    const pageSize = perPageRef.current;
-
-    const collectionRef = collection(fbFirestore, 'questions');
-    const qParts: any[] = [];
-
-    if (criteriaId) qParts.push(where('criteriaId', '==', criteriaId));
-
-    qParts.push(orderBy('createdAt', 'desc'));
-
-    if (pageIndex > 1) {
-      const cursor = cursorsRef.current[pageIndex - 1] ?? null;
-      if (cursor) {
-        qParts.push(startAfter(cursor));
-      }
-    }
-
-    qParts.push(fbLimit(pageSize));
-
-    return query(collectionRef, ...qParts);
-  }, []);
-
   const subscribePage = useCallback(
-    (pageIndex: number) => {
+    async (pageIndex: number) => {
       const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
       if (pageIndex < 1 || pageIndex > max) return;
 
-      // cleanup previous subscription
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-
       setIsLoading(true);
 
-      const q = buildQueryForPage(pageIndex);
+      try {
+        const { criteriaId } = paramsRef.current;
+        const pageSize = perPageRef.current;
+        const from = (pageIndex - 1) * pageSize;
+        const to = from + pageSize - 1;
 
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          console.info('[paginate snapshot] page', pageIndex, 'size', snap.size);
-          const list: QuestionInterface[] = [];
-          snap.forEach((d) => {
-            list.push(mapQuestion({ id: d.id, ...d.data() }));
-          });
+        let queryBuilder = supabase
+          .from('questions')
+          .select('*', { count: 'exact' });
 
-          setQuestionsList(list);
-          setIsLoading(false);
-
-          const last = snap.docs[snap.docs.length - 1] ?? null;
-          lastVisibleRef.current = last || null;
-          cursorsRef.current[pageIndex] = last || null;
-        },
-        (err) => {
-          console.error('paginate snapshot error', err.code, err.message);
-          setIsLoading(false);
+        if (criteriaId) {
+          queryBuilder = queryBuilder.eq('criteria_id', criteriaId);
         }
-      );
 
-      unsubscribeRef.current = unsub;
-      setPage(pageIndex);
+        queryBuilder = queryBuilder
+          .order('order_num', { ascending: true })
+          .range(from, to);
+
+        const { data, count, error } = await queryBuilder;
+
+        if (error) {
+          console.error('paginate fetch error', error.code, error.message);
+          setIsLoading(false);
+          return;
+        }
+
+        const list = (data ?? []).map(mapQuestion);
+        setQuestionsList(list);
+        if (count !== null) setTotalCount(count);
+        setIsLoading(false);
+        setPage(pageIndex);
+      } catch (err: any) {
+        console.error('paginate error', err);
+        setIsLoading(false);
+      }
     },
-    [buildQueryForPage]
+    []
   );
 
   const questions = useCallback(
@@ -187,24 +151,16 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
       limitRef.current = limit;
       perPageRef.current = perPage;
 
-      cursorsRef.current = [null];
-      lastVisibleRef.current = null;
-
       subscribePage(1);
     },
     [subscribePage]
   );
 
   const nextPage = useCallback(() => {
-    const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
+    const max = Math.max(1, Math.ceil((totalCount || limitRef.current || 50) / perPageRef.current));
     if (page >= max) return;
-    const cursorForNext = cursorsRef.current[page];
-    if (!cursorForNext) {
-      subscribePage(page + 1);
-    } else {
-      subscribePage(page + 1);
-    }
-  }, [page, subscribePage]);
+    subscribePage(page + 1);
+  }, [page, totalCount, subscribePage]);
 
   const prevPage = useCallback(() => {
     if (page <= 1) return;
@@ -212,19 +168,11 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
   }, [page, subscribePage]);
 
   const resetPagination = useCallback(() => {
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current();
-      unsubscribeRef.current = null;
-    }
-
-    cursorsRef.current = [null];
-    lastVisibleRef.current = null;
     setQuestionsList([]);
     setPage(1);
     setIsLoading(false);
   }, []);
 
-  // LOCAL GETTER
   const getQuestionById = useCallback(
     (id: string): QuestionInterface | null => {
       if (!id) return null;
@@ -236,11 +184,15 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
   const fetchQuestionById = useCallback(async (id: string): Promise<QuestionInterface | null> => {
     if (!id) return null;
     try {
-      const q = query(collection(fbFirestore, 'questions'), where('id', '==', id), fbLimit(1));
-      const snap = await getDocs(q);
-      if (snap.empty) return null;
-      const docSnap = snap.docs[0];
-      return mapQuestion({ id: docSnap.id, ...docSnap.data() });
+      const { data, error } = await supabase
+        .from('questions')
+        .select('*')
+        .eq('id', id)
+        .limit(1)
+        .single();
+
+      if (error || !data) return null;
+      return mapQuestion(data);
     } catch (err) {
       console.error('fetchQuestionById error', err);
       return null;
@@ -249,21 +201,26 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
 
   const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
-  // CRAETE QUESTION
+  // CREATE QUESTION
   const createQuestion = useCallback(async (payload: PayloadCreateQuestionInterface) => {
     try {
-      const docId = uuidv4();
+      const { data, error } = await supabase
+        .from('questions')
+        .insert({
+          criteria_id: payload.criteriaId,
+          order_num: payload.order,
+          text: payload.text,
+        })
+        .select()
+        .single();
 
-      await setDoc(doc(fbFirestore, 'questions', docId), {
-        id: docId,
-        ...payload,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      if (error || !data) throw new Error(error?.message ?? 'Failed to create question');
 
       return {
-        id: docId,
-        ...payload,
+        id: data.id,
+        criteriaId: payload.criteriaId,
+        order: payload.order,
+        text: payload.text,
       };
     } catch (error) {
       throw safeWrapError(error);
@@ -276,16 +233,21 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
       if (!id) return null;
 
       try {
-        const docRef = doc(fbFirestore, 'questions', id);
-        await updateDoc(docRef, {
-          ...payload,
-          updatedAt: serverTimestamp(),
-        });
+        const updateData: Record<string, any> = {};
+        if (payload.criteriaId !== undefined) updateData['criteria_id'] = payload.criteriaId;
+        if (payload.order !== undefined) updateData['order_num'] = payload.order;
+        if (payload.text !== undefined) updateData['text'] = payload.text;
 
-        const snap = await getDoc(docRef);
-        if (!snap.exists()) return null;
+        const { data, error } = await supabase
+          .from('questions')
+          .update(updateData)
+          .eq('id', id)
+          .select()
+          .single();
 
-        const updated = mapQuestion(snap.data());
+        if (error || !data) return null;
+
+        const updated = mapQuestion(data);
 
         setAllQuestionsCache((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
         setQuestionsList((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
@@ -304,8 +266,9 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
       if (!id) return false;
 
       try {
-        const docRef = doc(fbFirestore, 'questions', id);
-        await deleteDoc(docRef);
+        const { error } = await supabase.from('questions').delete().eq('id', id);
+
+        if (error) throw new Error(error.message);
 
         setAllQuestionsCache((prev) => prev.filter((u) => u.id !== id));
         setQuestionsList((prev) => prev.filter((u) => u.id !== id));
@@ -318,18 +281,8 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
     [setAllQuestionsCache, setQuestionsList]
   );
 
-  // CLEANUP ON UNMONT
-  useEffect(() => {
-    return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-    };
-  }, []);
-
-  const hasNext = page < Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-
+  const maxPages = Math.max(1, Math.ceil((totalCount || limitRef.current || 50) / perPageRef.current));
+  const hasNext = page < maxPages;
   const hasPrev = page > 1;
 
   return {
@@ -337,7 +290,7 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
     isLoading,
     page,
     perPage: perPageRef.current,
-    maxPages: Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current)),
+    maxPages,
     hasNext,
     hasPrev,
     questions,
