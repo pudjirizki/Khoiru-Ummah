@@ -1,107 +1,119 @@
 import type ExcelJS from 'exceljs';
-import { createClassReportFileName, createReportFileName, ReportSection, ReportStudent, ReportTable } from './report-data';
+import {
+  createClassReportFileName,
+  createReportFileName,
+  formatReportDate,
+  ReportItem,
+  ReportStudent,
+} from './report-data';
 
-const escapeHtml = (value: string | number): string =>
-  String(value)
+const escapeHtml = (value: string | number | null | undefined): string =>
+  String(value ?? '-')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
-const tableColumnCount = (table: ReportTable): number => 2 + (table.showKkm ? 1 : 0) + table.metrics.reduce((count, metric) => count + (metric.type === 'grade' ? 2 : 1), 0);
-
-const renderTable = (table: ReportTable, startIndex: number): string => {
-  const itemName = table.showKkm ? 'Mata Pelajaran' : 'Penilaian';
-  let headings = '';
-  let subheadings = '';
-  let metricIndex = 0;
-
-  while (metricIndex < table.metrics.length) {
-    const metric = table.metrics[metricIndex];
-    if (metric.group) {
-      const groupedMetrics: typeof table.metrics = [];
-      while (metricIndex < table.metrics.length && table.metrics[metricIndex].group === metric.group) {
-        groupedMetrics.push(table.metrics[metricIndex]);
-        metricIndex += 1;
-      }
-      const groupWidth = groupedMetrics.reduce((count, item) => count + (item.type === 'grade' ? 2 : 1), 0);
-      headings += `<th colspan="${groupWidth}">${escapeHtml(metric.group)}</th>`;
-      subheadings += groupedMetrics
-        .map((item) => `<th colspan="${item.type === 'grade' ? 2 : 1}">${escapeHtml(item.label)}${item.type === 'grade' ? ' (Angka/Huruf)' : ''}</th>`)
-        .join('');
-      continue;
-    }
-
-    if (metric.type === 'grade') {
-      headings += `<th colspan="2">${escapeHtml(metric.label)}</th>`;
-      subheadings += '<th>Angka</th><th>Huruf</th>';
-    } else {
-      headings += `<th rowspan="2">${escapeHtml(metric.label)}</th>`;
-    }
-    metricIndex += 1;
-  }
-
-  const fixedHeaders = `<th rowspan="2" class="number">No.</th><th rowspan="2">${itemName}</th>${table.showKkm ? '<th rowspan="2">KKM</th>' : ''}`;
-  const rows = table.rows
-    .map((row, rowIndex) => {
-      const values = table.metrics
-        .map((metric, metricIndex) => {
-          const value = row.values[metricIndex];
-          if (metric.type === 'text') return `<td class="text-value">${escapeHtml(value?.text || '-')}</td>`;
-          const belowKkm = value?.score !== null && value?.score !== undefined && row.kkm !== null && value.score < row.kkm;
-          return `<td class="grade${belowKkm ? ' below-kkm' : ''}">${value?.score === null || value?.score === undefined ? '-' : escapeHtml(value.score)}</td><td class="grade">${escapeHtml(value?.letter || '-')}</td>`;
-        })
-        .join('');
-      return `<tr><td class="number">${startIndex + rowIndex}</td><td>${escapeHtml(row.label)}</td>${table.showKkm ? `<td class="grade">${row.kkm === null ? '-' : escapeHtml(row.kkm)}</td>` : ''}${values}</tr>`;
-    })
+const renderTableHtml = (titleHeader: string, items: ReportItem[]): string => {
+  const rowsHtml = items
+    .map(
+      (item) => `
+        <tr>
+          <td class="td-no">${item.no}.</td>
+          <td class="td-item">${escapeHtml(item.label)}</td>
+          <td class="td-score">${item.score !== null && item.score !== undefined ? escapeHtml(item.score) : '-'}</td>
+          <td class="td-letter">${escapeHtml(item.letter || '-')}</td>
+        </tr>`
+    )
     .join('');
 
   return `
-    <div class="table-block">
-      ${table.title ? `<h3>${escapeHtml(table.title)}</h3>` : ''}
-      <table>
-        <thead><tr>${fixedHeaders}${headings}</tr><tr>${subheadings}</tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+    <table class="report-table">
+      <thead>
+        <tr>
+          <th rowspan="2" class="th-no">No.</th>
+          <th rowspan="2" class="th-item">${escapeHtml(titleHeader)}</th>
+          <th colspan="2" class="th-grade">Penilaian</th>
+        </tr>
+        <tr>
+          <th class="th-sub">Angka</th>
+          <th class="th-sub">Huruf</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rowsHtml}
+      </tbody>
+    </table>`;
 };
 
-const renderSectionsPage = (report: ReportStudent, sections: ReportSection[], pageNumber: number): string => {
-  let rowIndex = 1;
-  const body = sections
-    .map((section) => {
-      const tables = section.tables.map((table) => {
-        const html = renderTable(table, rowIndex);
-        rowIndex += table.rows.length;
-        return html;
-      });
-      return `<section class="report-section"><h2>${escapeHtml(section.title)}</h2>${tables.join('')}</section>`;
-    })
-    .join('');
+const renderReportPage = (report: ReportStudent): string => {
+  const displayClassSemester = `${escapeHtml(report.className)}/${escapeHtml(report.semester)}`;
+  const displayDateAndPlace = report.dateAndPlace || formatReportDate();
 
   return `
     <article class="report-page">
-      ${pageNumber === 1 ? `<header>
-        <div class="identity">
-          <div><strong>Nama Siswa :</strong><span>${escapeHtml(report.name)}</span></div>
-          <div><strong>Tahun Pelajaran :</strong><span>${escapeHtml(report.academicYear)}</span></div>
-          <div><strong>Kelas/Semester :</strong><span>${escapeHtml(report.className)} / ${escapeHtml(report.semester)}</span></div>
-          <div><strong>No. Induk :</strong><span>${escapeHtml(report.identityNumber)}</span></div>
+      <header class="header-container">
+        <div class="header-grid">
+          <div class="identity-item">
+            <span class="label">Nama Siswa</span>
+            <span class="colon">:</span>
+            <span class="val">${escapeHtml(report.name)}</span>
+          </div>
+          <div class="identity-item">
+            <span class="label">Tahun Pelajaran</span>
+            <span class="colon">:</span>
+            <span class="val">${escapeHtml(report.academicYear)}</span>
+          </div>
+          <div class="identity-item">
+            <span class="label">No. Induk Siswa</span>
+            <span class="colon">:</span>
+            <span class="val">${escapeHtml(report.identityNumber)}</span>
+          </div>
+          <div class="identity-item">
+            <span class="label">Kelas/Semester</span>
+            <span class="colon">:</span>
+            <span class="val">${displayClassSemester}</span>
+          </div>
         </div>
-      </header>` : ''}
-      ${body}
-      ${pageNumber === 2 ? `<footer><p class="place-date">Kota, tanggal: -</p><div class="signatures"><div><span>Orang Tua/Wali Siswa</span><strong>( - )</strong></div><div><span>Kepala Sekolah</span><strong>( - )</strong></div><div><span>Wali Kelas</span><strong>( - )</strong></div></div></footer>` : ''}
+      </header>
+
+      <div class="title-section">
+        <h2>${escapeHtml(report.title || 'SIKAP DAN PERILAKU SISWA')}</h2>
+      </div>
+
+      <div class="tables-section">
+        <div class="table-block">
+          ${renderTableHtml('Sikap', report.sikapItems)}
+        </div>
+
+        <div class="table-block table-block-second">
+          ${renderTableHtml('Perilaku / AL BIAH KU', report.perilakuItems)}
+        </div>
+      </div>
+
+      <footer class="footer-container">
+        <div class="date-line">${escapeHtml(displayDateAndPlace)}</div>
+        <div class="mengetahui-line">Mengetahui</div>
+        <div class="signatures-grid">
+          <div class="sig-col">
+            <div class="sig-role">Orang Tua / Wali Siswa</div>
+            <div class="sig-space"></div>
+            <div class="sig-name">(……………………………)</div>
+          </div>
+          <div class="sig-col">
+            <div class="sig-role">Kepala Sekolah,</div>
+            <div class="sig-space"></div>
+            <div class="sig-name">(……………………………)</div>
+          </div>
+          <div class="sig-col">
+            <div class="sig-role">Wali Kelas,</div>
+            <div class="sig-space"></div>
+            <div class="sig-name">(……………………………)</div>
+          </div>
+        </div>
+      </footer>
     </article>`;
-};
-
-const renderReport = (report: ReportStudent): string => {
-  const pageGroups = [
-    report.sections.filter((section) => ['A.', 'B.', 'C.', 'D.'].some((prefix) => section.title.startsWith(prefix))),
-    report.sections.filter((section) => ['E.', 'F.', 'G.', 'H.'].some((prefix) => section.title.startsWith(prefix))),
-  ];
-
-  return pageGroups.map((sections, index) => renderSectionsPage(report, sections, index + 1)).join('');
 };
 
 const createPrintableDocumentStart = (title: string): string => `<!doctype html>
@@ -110,32 +122,179 @@ const createPrintableDocumentStart = (title: string): string => `<!doctype html>
       <meta charset="utf-8" />
       <title>${escapeHtml(title)}</title>
       <style>
-        @page { size: A4 portrait; margin: 10mm; }
-        * { box-sizing: border-box; }
-        body { margin: 0; color: #17211b; font: 7pt Arial, sans-serif; }
-        .report-page { width: 100%; min-height: 277mm; break-after: page; page-break-after: always; }
-        .report-page:last-child { break-after: auto; page-break-after: auto; }
-        .identity { display: grid; grid-template-columns: 1fr 1fr; column-gap: 14px; row-gap: 3px; margin-bottom: 8px; }
-        .identity div { display: grid; grid-template-columns: 100px 1fr; }
-        .identity span { border-bottom: 1px dotted #555; }
-        h2 { margin: 7px 0 3px; padding: 3px 4px; background: #e7eee9; font-size: 8pt; }
-        h3 { margin: 5px 0 2px; font-size: 7pt; }
-        .table-block { break-inside: avoid; page-break-inside: avoid; }
-        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-        th, td { border: .5px solid #53645a; padding: 2px 2px; line-height: 1.1; }
-        thead th { background: #dcefe3; text-align: center; font-weight: 700; }
-        tbody tr { break-inside: avoid; page-break-inside: avoid; }
-        th:first-child, td.number { width: 5%; text-align: center; }
-        .grade, .text-value { text-align: center; }
-        .below-kkm { color: #dc2626; font-weight: 700; }
-        footer { margin-top: 20px; }
-        .place-date { margin: 0 0 5px; text-align: right; }
-        .signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
-        .signatures div { display: flex; min-height: 38mm; flex-direction: column; justify-content: space-between; }
-        .signatures strong { font-weight: 400; }
+        @page {
+          size: A4 portrait;
+          margin: 10mm 15mm;
+        }
+        * {
+          box-sizing: border-box;
+        }
+        body {
+          margin: 0;
+          color: #111827;
+          font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+          font-size: 8.5pt;
+          line-height: 1.25;
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
+        }
+        .report-page {
+          width: 100%;
+          min-height: 270mm;
+          max-height: 277mm;
+          break-after: page;
+          page-break-after: always;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+        }
+        .report-page:last-child {
+          break-after: auto;
+          page-break-after: auto;
+        }
+        .header-container {
+          margin-bottom: 8px;
+        }
+        .header-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          column-gap: 24px;
+          row-gap: 4px;
+          font-size: 8.5pt;
+        }
+        .identity-item {
+          display: flex;
+          align-items: baseline;
+        }
+        .identity-item .label {
+          width: 110px;
+          flex-shrink: 0;
+          font-weight: 400;
+        }
+        .identity-item .colon {
+          width: 14px;
+          flex-shrink: 0;
+        }
+        .identity-item .val {
+          flex: 1;
+          font-weight: 400;
+        }
+        .title-section {
+          text-align: center;
+          margin: 4px 0 8px 0;
+        }
+        .title-section h2 {
+          margin: 0;
+          font-size: 10pt;
+          font-weight: 700;
+          letter-spacing: 0.5px;
+        }
+        .tables-section {
+          flex: 1;
+        }
+        .table-block {
+          width: 100%;
+        }
+        .table-block-second {
+          margin-top: -1px;
+        }
+        table.report-table {
+          width: 100%;
+          border-collapse: collapse;
+          table-layout: fixed;
+          font-size: 8pt;
+        }
+        table.report-table th,
+        table.report-table td {
+          border: 1px solid #374151;
+          padding: 2.5px 4px;
+          vertical-align: middle;
+        }
+        table.report-table thead th {
+          background-color: #f1f5f9;
+          font-weight: 700;
+          text-align: center;
+        }
+        th.th-no {
+          width: 32px;
+          text-align: center;
+        }
+        th.th-item {
+          text-align: center;
+        }
+        th.th-grade {
+          width: 110px;
+          text-align: center;
+        }
+        th.th-sub {
+          width: 55px;
+          text-align: center;
+        }
+        td.td-no {
+          text-align: center;
+          font-size: 8pt;
+        }
+        td.td-item {
+          text-align: left;
+          padding-left: 6px;
+        }
+        td.td-score {
+          text-align: center;
+        }
+        td.td-letter {
+          text-align: center;
+        }
+        .footer-container {
+          margin-top: 10px;
+          font-size: 8.5pt;
+        }
+        .date-line {
+          text-align: right;
+          margin-bottom: 4px;
+          padding-right: 15px;
+        }
+        .mengetahui-line {
+          text-align: center;
+          font-weight: 600;
+          margin-bottom: 6px;
+        }
+        .signatures-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 10px;
+          text-align: center;
+        }
+        .sig-col {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: space-between;
+          min-height: 24mm;
+        }
+        .sig-role {
+          font-weight: 600;
+        }
+        .sig-space {
+          flex: 1;
+          min-height: 14mm;
+        }
+        .sig-name {
+          font-weight: 400;
+          letter-spacing: -0.5px;
+        }
         @media screen {
-          body { background: #edf2ee; padding: 12px; }
-          .report-page { width: 190mm; min-height: 277mm; margin: 0 auto 12px; padding: 2mm; background: white; box-shadow: 0 1px 8px #0002; }
+          body {
+            background: #e2e8f0;
+            padding: 16px;
+          }
+          .report-page {
+            width: 210mm;
+            min-height: 297mm;
+            margin: 0 auto 16px;
+            padding: 12mm 16mm;
+            background: white;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+          }
         }
       </style>
     </head>
@@ -145,7 +304,7 @@ const createPrintableDocumentTitle = (reports: ReportStudent[]): string =>
   reports.length === 1 ? createReportFileName(reports[0]) : createClassReportFileName(reports[0]?.className ?? '-');
 
 export const createPrintableReportHtml = (reports: ReportStudent[]): string =>
-  `${createPrintableDocumentStart(createPrintableDocumentTitle(reports))}${reports.map(renderReport).join('')}</body></html>`;
+  `${createPrintableDocumentStart(createPrintableDocumentTitle(reports))}${reports.map(renderReportPage).join('')}</body></html>`;
 
 export const printReports = async (reports: ReportStudent[]): Promise<void> => {
   if (reports.length === 0) throw new Error('Tidak ada data siswa untuk diekspor.');
@@ -157,12 +316,12 @@ export const printReports = async (reports: ReportStudent[]): Promise<void> => {
   printWindow.document.open();
   printWindow.document.write(createPrintableDocumentStart(createPrintableDocumentTitle(reports)));
   for (let index = 0; index < reports.length; index += 10) {
-    printWindow.document.write(reports.slice(index, index + 10).map(renderReport).join(''));
+    printWindow.document.write(reports.slice(index, index + 10).map(renderReportPage).join(''));
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
   }
   printWindow.document.write('</body></html>');
   printWindow.document.close();
-  window.setTimeout(() => printWindow.print(), 300);
+  window.setTimeout(() => printWindow.print(), 350);
 };
 
 const worksheetName = (name: string, index: number, used: Set<string>): string => {
@@ -181,215 +340,190 @@ const worksheetName = (name: string, index: number, used: Set<string>): string =
 };
 
 const thinBorder = {
-  top: { style: 'thin' as const, color: { argb: 'FF9AA99F' } },
-  left: { style: 'thin' as const, color: { argb: 'FF9AA99F' } },
-  bottom: { style: 'thin' as const, color: { argb: 'FF9AA99F' } },
-  right: { style: 'thin' as const, color: { argb: 'FF9AA99F' } },
+  top: { style: 'thin' as const, color: { argb: 'FF374151' } },
+  left: { style: 'thin' as const, color: { argb: 'FF374151' } },
+  bottom: { style: 'thin' as const, color: { argb: 'FF374151' } },
+  right: { style: 'thin' as const, color: { argb: 'FF374151' } },
 };
 
-const styleRow = (row: ExcelJS.Row) => {
-  row.eachCell({ includeEmpty: true }, (cell) => {
+const styleTableCells = (row: ExcelJS.Row, colFrom: number, colTo: number) => {
+  for (let c = colFrom; c <= colTo; c += 1) {
+    const cell = row.getCell(c);
     cell.border = thinBorder;
-    cell.alignment = { vertical: 'middle', wrapText: true };
-  });
-};
-
-const columnLetter = (worksheet: ExcelJS.Worksheet, column: number): string => worksheet.getColumn(column).letter;
-
-const addTableToWorksheet = (worksheet: ExcelJS.Worksheet, table: ReportTable, startRow: number): number => {
-  const columnCount = tableColumnCount(table);
-  const lastColumn = columnLetter(worksheet, columnCount);
-  let rowNumber = startRow;
-
-  worksheet.mergeCells(`A${rowNumber}:${lastColumn}${rowNumber}`);
-  const titleCell = worksheet.getCell(`A${rowNumber}`);
-  titleCell.value = table.title;
-  titleCell.font = { bold: true, color: { argb: 'FF1F5135' } };
-  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEAF3ED' } };
-  styleRow(worksheet.getRow(rowNumber));
-  rowNumber += 1;
-
-  let firstMetricColumn = table.showKkm ? 4 : 3;
-  worksheet.mergeCells(`A${rowNumber}:A${rowNumber + 1}`);
-  worksheet.mergeCells(`B${rowNumber}:B${rowNumber + 1}`);
-  worksheet.getCell(`A${rowNumber}`).value = 'No.';
-  worksheet.getCell(`B${rowNumber}`).value = table.showKkm ? 'Mata Pelajaran' : 'Penilaian';
-  if (table.showKkm) {
-    worksheet.mergeCells(`C${rowNumber}:C${rowNumber + 1}`);
-    worksheet.getCell(`C${rowNumber}`).value = 'KKM';
   }
-
-  let metricIndex = 0;
-  while (metricIndex < table.metrics.length) {
-    const metric = table.metrics[metricIndex];
-    if (metric.group) {
-      const groupedMetrics: typeof table.metrics = [];
-      while (metricIndex < table.metrics.length && table.metrics[metricIndex].group === metric.group) {
-        groupedMetrics.push(table.metrics[metricIndex]);
-        metricIndex += 1;
-      }
-
-      const groupWidth = groupedMetrics.reduce((count, item) => count + (item.type === 'grade' ? 2 : 1), 0);
-      const groupEnd = firstMetricColumn + groupWidth - 1;
-      worksheet.mergeCells(`${columnLetter(worksheet, firstMetricColumn)}${rowNumber}:${columnLetter(worksheet, groupEnd)}${rowNumber}`);
-      worksheet.getCell(`${columnLetter(worksheet, firstMetricColumn)}${rowNumber}`).value = metric.group;
-      groupedMetrics.forEach((item) => {
-        const width = item.type === 'grade' ? 2 : 1;
-        const itemEnd = firstMetricColumn + width - 1;
-        if (width === 2) {
-          worksheet.mergeCells(`${columnLetter(worksheet, firstMetricColumn)}${rowNumber + 1}:${columnLetter(worksheet, itemEnd)}${rowNumber + 1}`);
-        }
-        worksheet.getCell(`${columnLetter(worksheet, firstMetricColumn)}${rowNumber + 1}`).value =
-          item.type === 'grade' ? `${item.label} (Angka/Huruf)` : item.label;
-        firstMetricColumn += width;
-      });
-      continue;
-    }
-
-    if (metric.type === 'grade') {
-      worksheet.mergeCells(`${columnLetter(worksheet, firstMetricColumn)}${rowNumber}:${columnLetter(worksheet, firstMetricColumn + 1)}${rowNumber}`);
-      worksheet.getCell(`${columnLetter(worksheet, firstMetricColumn)}${rowNumber}`).value = metric.label;
-      worksheet.getCell(`${columnLetter(worksheet, firstMetricColumn)}${rowNumber + 1}`).value = 'Angka';
-      worksheet.getCell(`${columnLetter(worksheet, firstMetricColumn + 1)}${rowNumber + 1}`).value = 'Huruf';
-      firstMetricColumn += 2;
-    } else {
-      worksheet.mergeCells(`${columnLetter(worksheet, firstMetricColumn)}${rowNumber}:${columnLetter(worksheet, firstMetricColumn)}${rowNumber + 1}`);
-      worksheet.getCell(`${columnLetter(worksheet, firstMetricColumn)}${rowNumber}`).value = metric.label;
-      firstMetricColumn += 1;
-    }
-    metricIndex += 1;
-  }
-
-  [rowNumber, rowNumber + 1].forEach((headerRow) => {
-    const row = worksheet.getRow(headerRow);
-    styleRow(row);
-    row.font = { bold: true };
-    row.eachCell((cell) => {
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCEFE3' } };
-      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    });
-  });
-  rowNumber += 2;
-
-  table.rows.forEach((item, itemIndex) => {
-    const row = worksheet.getRow(rowNumber);
-    const values: (string | number | null)[] = [itemIndex + 1, item.label];
-    if (table.showKkm) values.push(item.kkm ?? '-');
-
-    table.metrics.forEach((metric, metricIndex) => {
-      const value = item.values[metricIndex];
-      if (metric.type === 'grade') values.push(value?.score ?? '-', value?.letter ?? '-');
-      else values.push(value?.text || '-');
-    });
-
-    row.values = values;
-    styleRow(row);
-    let valueColumn = table.showKkm ? 3 : 2;
-    if (table.showKkm && item.kkm !== null) row.getCell(valueColumn).numFmt = '0.##';
-    valueColumn += 1;
-
-    table.metrics.forEach((metric, metricIndex) => {
-      const value = item.values[metricIndex];
-      if (metric.type === 'grade') {
-        const scoreCell = row.getCell(valueColumn);
-        scoreCell.alignment = { horizontal: 'center', vertical: 'middle' };
-        row.getCell(valueColumn + 1).alignment = { horizontal: 'center', vertical: 'middle' };
-        if (value?.score !== null && value?.score !== undefined) {
-          scoreCell.numFmt = '0.##';
-          if (item.kkm !== null && value.score < item.kkm) scoreCell.font = { bold: true, color: { argb: 'FFDC2626' } };
-        }
-        valueColumn += 2;
-      } else {
-        row.getCell(valueColumn).alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-        valueColumn += 1;
-      }
-    });
-    rowNumber += 1;
-  });
-
-  return rowNumber;
 };
 
 const addStudentWorksheet = (workbook: ExcelJS.Workbook, report: ReportStudent, index: number, names: Set<string>) => {
-  const worksheet = workbook.addWorksheet(worksheetName(report.name, index, names));
-  worksheet.columns = Array.from({ length: 14 }, (_, columnIndex) => ({
-    width: columnIndex === 1 ? 30 : columnIndex < 3 ? 7 : 9,
-  }));
-  const lastColumn = columnLetter(worksheet, 14);
+  const sheet = workbook.addWorksheet(worksheetName(report.name, index, names));
 
-  worksheet.getCell('A1').value = 'Nama Siswa :';
-  worksheet.mergeCells('B1:F1');
-  worksheet.getCell('B1').value = report.name;
-  worksheet.getCell('G1').value = 'Tahun Pelajaran :';
-  worksheet.mergeCells('H1:N1');
-  worksheet.getCell('H1').value = report.academicYear;
+  // Columns: A: No (5), B: Sikap/Perilaku (45), C: Angka (11), D: Huruf (11)
+  sheet.columns = [
+    { width: 6 },
+    { width: 48 },
+    { width: 12 },
+    { width: 12 },
+  ];
 
-  worksheet.getCell('A2').value = 'Kelas/Semester :';
-  worksheet.mergeCells('B2:F2');
-  worksheet.getCell('B2').value = `${report.className} / ${report.semester}`;
-  worksheet.getCell('G2').value = 'No. Induk :';
-  worksheet.mergeCells('H2:N2');
-  worksheet.getCell('H2').value = report.identityNumber;
+  // 1. Header Identity
+  // Row 1
+  sheet.getCell('A1').value = 'Nama Siswa';
+  sheet.getCell('A1').font = { bold: false, size: 10 };
+  sheet.getCell('B1').value = `: ${report.name}`;
+  sheet.getCell('B1').font = { size: 10 };
+  sheet.getCell('C1').value = 'Tahun Pelajaran';
+  sheet.getCell('C1').font = { bold: false, size: 10 };
+  sheet.getCell('D1').value = `: ${report.academicYear}`;
+  sheet.getCell('D1').font = { size: 10 };
 
-  [1, 2].forEach((rowNumber) => {
-    const row = worksheet.getRow(rowNumber);
-    styleRow(row);
-    ['A', 'G'].forEach((column) => {
-      const cell = worksheet.getCell(`${column}${rowNumber}`);
-      cell.font = { bold: true };
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEAF3ED' } };
+  // Row 2
+  sheet.getCell('A2').value = 'No. Induk Siswa';
+  sheet.getCell('A2').font = { bold: false, size: 10 };
+  sheet.getCell('B2').value = `: ${report.identityNumber}`;
+  sheet.getCell('B2').font = { size: 10 };
+  sheet.getCell('C2').value = 'Kelas/Semester';
+  sheet.getCell('C2').font = { bold: false, size: 10 };
+  sheet.getCell('D2').value = `: ${report.className}/${report.semester}`;
+  sheet.getCell('D2').font = { size: 10 };
+
+  // 2. Title: SIKAP DAN PERILAKU SISWA
+  sheet.mergeCells('A4:D4');
+  const titleCell = sheet.getCell('A4');
+  titleCell.value = report.title || 'SIKAP DAN PERILAKU SISWA';
+  titleCell.font = { bold: true, size: 11 };
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+  let currentRow = 6;
+
+  // Helper to render a table in Excel
+  const renderTableExcel = (headerTitle: string, items: ReportItem[]) => {
+    // Header Row 1
+    sheet.mergeCells(`A${currentRow}:A${currentRow + 1}`);
+    sheet.mergeCells(`B${currentRow}:B${currentRow + 1}`);
+    sheet.mergeCells(`C${currentRow}:D${currentRow}`);
+
+    const cellNo = sheet.getCell(`A${currentRow}`);
+    cellNo.value = 'No.';
+    cellNo.alignment = { horizontal: 'center', vertical: 'middle' };
+    cellNo.font = { bold: true };
+
+    const cellTitle = sheet.getCell(`B${currentRow}`);
+    cellTitle.value = headerTitle;
+    cellTitle.alignment = { horizontal: 'center', vertical: 'middle' };
+    cellTitle.font = { bold: true };
+
+    const cellGrade = sheet.getCell(`C${currentRow}`);
+    cellGrade.value = 'Penilaian';
+    cellGrade.alignment = { horizontal: 'center', vertical: 'middle' };
+    cellGrade.font = { bold: true };
+
+    // Header Row 2
+    const cellAngka = sheet.getCell(`C${currentRow + 1}`);
+    cellAngka.value = 'Angka';
+    cellAngka.alignment = { horizontal: 'center', vertical: 'middle' };
+    cellAngka.font = { bold: true };
+
+    const cellHuruf = sheet.getCell(`D${currentRow + 1}`);
+    cellHuruf.value = 'Huruf';
+    cellHuruf.alignment = { horizontal: 'center', vertical: 'middle' };
+    cellHuruf.font = { bold: true };
+
+    // Style headers
+    [currentRow, currentRow + 1].forEach((rNum) => {
+      const r = sheet.getRow(rNum);
+      styleTableCells(r, 1, 4);
+      for (let c = 1; c <= 4; c += 1) {
+        r.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+      }
     });
-  });
 
-  let rowNumber = 4;
-  report.sections.forEach((section) => {
-    worksheet.mergeCells(`A${rowNumber}:${lastColumn}${rowNumber}`);
-    const sectionCell = worksheet.getCell(`A${rowNumber}`);
-    sectionCell.value = section.title;
-    sectionCell.font = { bold: true, color: { argb: 'FF1F5135' } };
-    sectionCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE1EBE4' } };
-    styleRow(worksheet.getRow(rowNumber));
-    rowNumber += 1;
+    currentRow += 2;
 
-    section.tables.forEach((table) => {
-      rowNumber = addTableToWorksheet(worksheet, table, rowNumber) + 1;
+    // Data rows
+    items.forEach((item) => {
+      const r = sheet.getRow(currentRow);
+      r.getCell(1).value = `${item.no}.`;
+      r.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+
+      r.getCell(2).value = item.label;
+      r.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
+
+      r.getCell(3).value = item.score !== null && item.score !== undefined ? item.score : '-';
+      r.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
+      if (item.score !== null && item.score !== undefined) {
+        r.getCell(3).numFmt = '0';
+      }
+
+      r.getCell(4).value = item.letter || '-';
+      r.getCell(4).alignment = { horizontal: 'center', vertical: 'middle' };
+
+      styleTableCells(r, 1, 4);
+      currentRow += 1;
     });
-  });
+  };
 
-  worksheet.mergeCells(`A${rowNumber}:${lastColumn}${rowNumber}`);
-  worksheet.getCell(`A${rowNumber}`).value = 'Kota, tanggal: -';
-  worksheet.getCell(`A${rowNumber}`).alignment = { horizontal: 'right' };
-  rowNumber += 1;
-  worksheet.mergeCells(`A${rowNumber}:D${rowNumber}`);
-  worksheet.mergeCells(`F${rowNumber}:I${rowNumber}`);
-  worksheet.mergeCells(`K${rowNumber}:N${rowNumber}`);
-  worksheet.getCell(`A${rowNumber}`).value = 'Orang Tua/Wali Siswa';
-  worksheet.getCell(`F${rowNumber}`).value = 'Kepala Sekolah';
-  worksheet.getCell(`K${rowNumber}`).value = 'Wali Kelas';
-  [1, 6, 11].forEach((column) => {
-    worksheet.getCell(rowNumber, column).font = { bold: true };
-    worksheet.getCell(rowNumber, column).alignment = { horizontal: 'center' };
-  });
-  rowNumber += 4;
-  worksheet.mergeCells(`A${rowNumber}:D${rowNumber}`);
-  worksheet.mergeCells(`F${rowNumber}:I${rowNumber}`);
-  worksheet.mergeCells(`K${rowNumber}:N${rowNumber}`);
-  worksheet.getCell(`A${rowNumber}`).value = '( - )';
-  worksheet.getCell(`F${rowNumber}`).value = '( - )';
-  worksheet.getCell(`K${rowNumber}`).value = '( - )';
-  [1, 6, 11].forEach((column) => worksheet.getCell(rowNumber, column).alignment = { horizontal: 'center' });
+  // Table 1: Sikap
+  renderTableExcel('Sikap', report.sikapItems);
 
-  worksheet.pageSetup = {
-    paperSize: 9,
+  // Table 2: Perilaku / AL BIAH KU (directly attached without gap, as in the user's template)
+  renderTableExcel('Perilaku / AL BIAH KU', report.perilakuItems);
+
+  currentRow += 1;
+
+  // 3. Footer / Signatures
+  // Place & Date
+  sheet.mergeCells(`C${currentRow}:D${currentRow}`);
+  const dateCell = sheet.getCell(`C${currentRow}`);
+  dateCell.value = report.dateAndPlace || formatReportDate();
+  dateCell.alignment = { horizontal: 'right', vertical: 'middle' };
+  currentRow += 1;
+
+  // Mengetahui
+  sheet.mergeCells(`A${currentRow}:D${currentRow}`);
+  const mengetCell = sheet.getCell(`A${currentRow}`);
+  mengetCell.value = 'Mengetahui';
+  mengetCell.font = { bold: true };
+  mengetCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  currentRow += 1;
+
+  // Signer roles
+  const sigRow = currentRow;
+  sheet.getCell(`A${sigRow}`).value = 'Orang Tua / Wali Siswa';
+  sheet.getCell(`A${sigRow}`).font = { bold: true };
+  sheet.getCell(`A${sigRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+
+  sheet.mergeCells(`B${sigRow}:C${sigRow}`);
+  sheet.getCell(`B${sigRow}`).value = 'Kepala Sekolah,';
+  sheet.getCell(`B${sigRow}`).font = { bold: true };
+  sheet.getCell(`B${sigRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+
+  sheet.getCell(`D${sigRow}`).value = 'Wali Kelas,';
+  sheet.getCell(`D${sigRow}`).font = { bold: true };
+  sheet.getCell(`D${sigRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+
+  currentRow += 4;
+
+  // Signer dotted line / names
+  const nameRow = currentRow;
+  sheet.getCell(`A${nameRow}`).value = '(……………………………)';
+  sheet.getCell(`A${nameRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+
+  sheet.mergeCells(`B${nameRow}:C${nameRow}`);
+  sheet.getCell(`B${nameRow}`).value = '(……………………………)';
+  sheet.getCell(`B${nameRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+
+  sheet.getCell(`D${nameRow}`).value = '(……………………………)';
+  sheet.getCell(`D${nameRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+
+  // Page setup: Fit neatly on 1 A4 portrait page
+  sheet.pageSetup = {
+    paperSize: 9, // A4
     orientation: 'portrait',
     fitToPage: true,
     fitToWidth: 1,
-    fitToHeight: 2,
-    margins: { left: 0.4, right: 0.4, top: 0.4, bottom: 0.4, header: 0.15, footer: 0.15 },
+    fitToHeight: 1,
+    margins: { left: 0.5, right: 0.5, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 },
   };
-  worksheet.pageSetup.printArea = `A1:${lastColumn}${rowNumber}`;
-  worksheet.views = [{ state: 'normal', showGridLines: false }];
-  worksheet.headerFooter.oddFooter = '&C&"Arial,Regular"Halaman &P dari &N';
+  sheet.views = [{ state: 'normal', showGridLines: true }];
 };
 
 export const downloadExcelReports = async (reports: ReportStudent[]): Promise<void> => {

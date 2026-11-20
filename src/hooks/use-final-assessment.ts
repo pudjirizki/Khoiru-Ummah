@@ -1,12 +1,16 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { collection, query, orderBy, onSnapshot, limit as fbLimit, startAfter, QueryDocumentSnapshot, Timestamp, where, getDocs } from 'firebase/firestore';
-// firebase
-import { fbFirestore } from '/src/firebase';
+// supabase
+import { supabase } from '/src/lib/supabase';
 // interfaces
 import { PayloadCreateAnswerInterface } from '/src/interfaces/answer';
 import { PayloadCreateAnswerDetailInterface } from '/src/interfaces/answer-details';
 import { AssessmentInterface, PayloadCreateAssessmentInterface } from '/src/interfaces/assessment';
-import { FinalAssessmentInterface, FinalAssessmentsParamsInterface, PayloadCreateAnswersFinalAssessmentInterface, PayloadCreateFinalAssessmentInterface } from '/src/interfaces/final-assessment';
+import {
+  FinalAssessmentInterface,
+  FinalAssessmentsParamsInterface,
+  PayloadCreateAnswersFinalAssessmentInterface,
+  PayloadCreateFinalAssessmentInterface,
+} from '/src/interfaces/final-assessment';
 // hooks
 import { useDatabaseUser } from '/src/hooks/use-database-user';
 import { useDatabaseAnswer } from '/src/hooks/use-database-answer';
@@ -50,160 +54,80 @@ export interface UseFinalAssessmentInterface {
 
 const mapAssessment = (data: any): AssessmentInterface => ({
   id: data.id,
-  formId: data.formId,
-  userId: data.userId,
-  studenId: data.studenId,
-  studentClass: data.studentClass,
+  formId: data.form_id ?? data.formId,
+  userId: data.user_id ?? data.userId,
+  studenId: data.student_id ?? data.studenId,
+  studentClass: data.student_class ?? data.studentClass,
   catatan: data.catatan,
   score: data.score,
-  createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(data.createdAt),
-  updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(data.updatedAt),
+  createdAt: new Date(data.created_at ?? data.createdAt),
+  updatedAt: new Date(data.updated_at ?? data.updatedAt),
 });
 
 // ----------------------------------------------------------------------
 
 export const useFinalAssessment = (): UseFinalAssessmentInterface => {
   const [allFinalAssessmentsCache, setAllFinalAssessmentsCache] = useState<AssessmentInterface[]>([]);
-
   const [finalAssessmentsList, setFinalAssessmentsList] = useState<AssessmentInterface[]>([]);
-
   const [isLoading, setIsLoading] = useState<boolean>(false);
-
   const [page, setPage] = useState<number>(1);
 
   const perPageRef = useRef<number>(5);
-
   const limitRef = useRef<number>(50);
-
-  const cursorsRef = useRef<QueryDocumentSnapshot<any>[] | null[]>([null]);
-
-  const lastVisibleRef = useRef<QueryDocumentSnapshot<any> | null>(null);
-
   const paramsRef = useRef<FinalAssessmentsParamsInterface>({ formId: '', userId: '', studentId: '', limit: 50, perPage: 5 });
 
-  const unsubscribeRef = useRef<(() => void) | null>(null);
-
   const { createAssessment, allAssessmentsCache: assessmentsCacheFromHook, deleteAssessment, fetchAssessmentById, updateAssessment, getAssessmentById } = useDatabaseAssessment();
-
   const { createAnswer, allAnswersCache, deleteAnswer, updateAnswer } = useDatabaseAnswer();
-
   const { createAnswerDetail, allAnswerDetailsCache, deleteAnswerDetail, updateAnswerDetail } = useDatabaseAnswerDetail();
-
   const { createNotification } = useDatabaseNotification();
-
   const { allUsersCache } = useDatabaseUser();
-
   const { allStudentsCache } = useDatabaseStudent();
 
-  // sync
+  // sync from hook cache
   useEffect(() => {
     if (Array.isArray(assessmentsCacheFromHook)) {
       setAllFinalAssessmentsCache(assessmentsCacheFromHook);
     }
   }, [assessmentsCacheFromHook]);
 
-  // ALL ASSESSMENT CACHE
-  useEffect(() => {
-    const q = query(collection(fbFirestore, 'assessments'), orderBy('createdAt'));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const arr: AssessmentInterface[] = [];
-        snap.forEach((d) => arr.push(mapAssessment({ id: d.id, ...d.data() })));
-        setAllFinalAssessmentsCache(arr);
-      },
-      (err) => {
-        console.error('allFinalAssessmentsCache snapshot error', err);
-        setAllFinalAssessmentsCache([]);
-      }
-    );
+  const subscribePage = useCallback(async (pageIndex: number) => {
+    const perPage = perPageRef.current;
+    const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPage));
+    if (pageIndex < 1 || pageIndex > max) return;
 
-    return () => {
-      unsub();
-      setAllFinalAssessmentsCache([]);
-    };
-  }, []);
+    setIsLoading(true);
+    try {
+      const { formId, userId, studentId } = paramsRef.current;
+      const from = (pageIndex - 1) * perPage;
+      const to = from + perPage - 1;
 
-  const buildQueryForPage = useCallback((pageIndex: number) => {
-    const { formId, userId, studentId } = paramsRef.current;
-    const pageSize = perPageRef.current;
+      let q = supabase.from('assessments').select('*').order('created_at', { ascending: false });
 
-    const collectionRef = collection(fbFirestore, 'assessments');
-    const qParts: any[] = [];
+      if (formId) q = q.eq('form_id', formId);
+      if (userId) q = q.eq('user_id', userId);
+      if (studentId) q = q.eq('student_id', studentId);
 
-    if (formId) qParts.push(where('formId', '==', formId));
-    if (userId) qParts.push(where('userId', '==', userId));
-    if (studentId) qParts.push(where('studentId', '==', studentId));
+      q = q.range(from, to);
 
-    qParts.push(orderBy('createdAt', 'desc'));
-
-    if (pageIndex > 1) {
-      const cursor = cursorsRef.current[pageIndex - 1] ?? null;
-      if (cursor) {
-        qParts.push(startAfter(cursor));
-      }
+      const { data } = await q;
+      setFinalAssessmentsList((data ?? []).map(mapAssessment));
+    } finally {
+      setIsLoading(false);
     }
-
-    qParts.push(fbLimit(pageSize));
-
-    return query(collectionRef, ...qParts);
+    setPage(pageIndex);
   }, []);
-
-  const subscribePage = useCallback(
-    (pageIndex: number) => {
-      const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-      if (pageIndex < 1 || pageIndex > max) return;
-
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-
-      setIsLoading(true);
-      const q = buildQueryForPage(pageIndex);
-
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          const list: AssessmentInterface[] = [];
-          snap.forEach((d) => {
-            list.push(mapAssessment({ id: d.id, ...d.data() }));
-          });
-
-          setFinalAssessmentsList(list);
-          setIsLoading(false);
-
-          const last = snap.docs[snap.docs.length - 1] ?? null;
-          lastVisibleRef.current = last || null;
-          cursorsRef.current[pageIndex] = last || null;
-        },
-        (err) => {
-          console.error('paginate snapshot error', err.code, err.message);
-          setIsLoading(false);
-        }
-      );
-
-      unsubscribeRef.current = unsub;
-      setPage(pageIndex);
-    },
-    [buildQueryForPage]
-  );
 
   const finalAssessments = useCallback(
     (params?: FinalAssessmentsParamsInterface) => {
-      const formId = params?.formId ?? '';
-      const userId = params?.userId ?? '';
-      const studentId = params?.studentId ?? '';
-      const limit = params?.limit ?? 50;
-      const perPage = params?.perPage ?? 5;
-
-      paramsRef.current = { formId, userId, studentId, limit, perPage };
-      limitRef.current = limit;
-      perPageRef.current = perPage;
-
-      cursorsRef.current = [null];
-      lastVisibleRef.current = null;
-
+      paramsRef.current = {
+        formId: params?.formId ?? '',
+        userId: params?.userId ?? '',
+        studentId: params?.studentId ?? '',
+        limit: params?.limit ?? 50,
+        perPage: params?.perPage ?? 5,
+      };
+      limitRef.current = params?.limit ?? 50;
+      perPageRef.current = params?.perPage ?? 5;
       subscribePage(1);
     },
     [subscribePage]
@@ -221,12 +145,6 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
   }, [page, subscribePage]);
 
   const resetPagination = useCallback(() => {
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current();
-      unsubscribeRef.current = null;
-    }
-    cursorsRef.current = [null];
-    lastVisibleRef.current = null;
     setFinalAssessmentsList([]);
     setPage(1);
     setIsLoading(false);
@@ -243,7 +161,7 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
 
   // FORMAT TIME
   const formatTimestamp = (value: any): string => {
-    const date = value && typeof value.toDate === 'function' ? value.toDate() : value instanceof Date ? value : new Date(value);
+    const date = value instanceof Date ? value : new Date(value);
     const datePart = date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Jakarta' } as any);
     const timePart = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Jakarta' } as any);
     return `${datePart} at ${timePart} UTC+7`;
@@ -258,19 +176,41 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
         const assessment = await fetchAssessmentById(id);
         if (!assessment?.id) return null;
 
-        const answersSnap = await getDocs(query(collection(fbFirestore, 'answers'), where('assessmentId', '==', id)));
-        const answersRaw = answersSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+        const { data: answersData } = await supabase
+          .from('answers')
+          .select('*')
+          .eq('assessment_id', id);
+
+        const answersRaw = (answersData ?? []).map((d) => ({
+          id: d.id,
+          assessmentId: d.assessment_id ?? d.assessmentId,
+          criteriaId: d.criteria_id ?? d.criteriaId,
+          averagePoint: d.average_point ?? d.averagePoint,
+          createdAt: d.created_at ?? d.createdAt,
+          updatedAt: d.updated_at ?? d.updatedAt,
+        }));
 
         const answersWithDetails = await Promise.all(
           answersRaw.map(async (c) => {
-            const dSnap = await getDocs(query(collection(fbFirestore, 'answerDetails'), where('answerId', '==', c.id)));
-            const answerDetailsRaw = dSnap.docs.map((qD) => ({ id: qD.id, ...(qD.data() as any) }));
+            const { data: detailsData } = await supabase
+              .from('answer_details')
+              .select('*')
+              .eq('answer_id', c.id);
+
+            const answerDetailsRaw = (detailsData ?? []).map((qD) => ({
+              id: qD.id,
+              answerId: qD.answer_id ?? qD.answerId,
+              questionId: qD.question_id ?? qD.questionId,
+              point: qD.point,
+              createdAt: qD.created_at ?? qD.createdAt,
+              updatedAt: qD.updated_at ?? qD.updatedAt,
+            }));
 
             const answerDetailsSorted = answerDetailsRaw
               .slice()
               .sort((a: any, b: any) => {
-                const aa = a.createdAt && typeof a.createdAt.toDate === 'function' ? a.createdAt.toDate().getTime() : new Date(a.createdAt ?? 0).getTime();
-                const bb = b.createdAt && typeof b.createdAt.toDate === 'function' ? b.createdAt.toDate().getTime() : new Date(b.createdAt ?? 0).getTime();
+                const aa = new Date(a.createdAt ?? 0).getTime();
+                const bb = new Date(b.createdAt ?? 0).getTime();
                 return aa - bb;
               })
               .map((q: any) => ({
@@ -305,46 +245,6 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
   const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
   // CREATE FINAL ASSESSMENT
-  // const createFinalAssessment = useCallback(
-  //   async (payload: PayloadCreateFinalAssessmentInterface) => {
-  //     try {
-  //       const { answers = [], ...assessmentPayload } = payload;
-
-  //       const resAssessment = await createAssessment(assessmentPayload as PayloadCreateAssessmentInterface);
-  //       const assessmentId = (resAssessment && (resAssessment as any).id) ?? (typeof resAssessment === 'string' ? resAssessment : '');
-
-  //       await Promise.all(
-  //         answers.map(async (c: PayloadCreateAnswersFinalAssessmentInterface) => {
-  //           const { answerDetails = [], ...answerPayload } = c;
-
-  //           const createdAnswer = await createAnswer({
-  //             ...answerPayload,
-  //             assessmentId,
-  //           } as PayloadCreateAnswerInterface);
-
-  //           const answerId = (createdAnswer && (createdAnswer as any).id) ?? (typeof createdAnswer === 'string' ? createdAnswer : '');
-
-  //           if (Array.isArray(answerDetails) && answerDetails.length > 0 && answerId) {
-  //             await Promise.all(
-  //               answerDetails.map((q) =>
-  //                 createAnswerDetail({
-  //                   ...q,
-  //                   answerId,
-  //                 } as PayloadCreateAnswerDetailInterface)
-  //               )
-  //             );
-  //           }
-  //         })
-  //       );
-
-  //       return await fetchAssessmentById(assessmentId);
-  //     } catch (error) {
-  //       throw safeWrapError(error);
-  //     }
-  //   },
-  //   [createAnswer, createAnswerDetail, createAssessment, fetchAssessmentById]
-  // );
-
   const createFinalAssessment = useCallback(
     async (payload: PayloadCreateFinalAssessmentInterface) => {
       const getId = (res: unknown): string | undefined => {
@@ -389,7 +289,6 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
         const student = allStudentsCache.find((s) => s.id === assessmentPayload.studenId);
         const normalizedCatatan = typeof assessmentPayload.catatan === 'string' ? assessmentPayload.catatan.trim() : '';
 
-        // create assessment
         const resAssessment = await createAssessment({
           ...(assessmentPayload as PayloadCreateAssessmentInterface),
           catatan: normalizedCatatan,
@@ -398,31 +297,21 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
         const assessmentId = getId(resAssessment);
         if (!assessmentId) throw new Error('Failed to create assessment');
 
-        // create answers + details concurrently
         if (Array.isArray(answers) && answers.length > 0) {
-          await Promise.all(answers.map((ans) => createAnswerWithDetails(ans, assessmentId)));
+          await Promise.all(answers.map((answer) => createAnswerWithDetails(answer, assessmentId)));
         }
 
-        const triggeringUser = allUsersCache.find((u) => u.id === assessmentPayload.userId);
-        const targetRole = resolveTargetRole(triggeringUser?.role);
-        const userTargetId = resolveNotificationRecipient(targetRole, assessmentPayload);
+        const user = allUsersCache.find((u) => u.id === assessmentPayload.userId);
+        const targetRole = resolveTargetRole(user?.role);
+        const recipientUserId = resolveNotificationRecipient(targetRole, assessmentPayload);
 
         await createNotification({
-          formId: assessmentPayload.formId,
-          userId: userTargetId ?? '',
-          name: triggeringUser?.name ?? '',
-          description: 'telah mengisi formulir',
+          userId: recipientUserId ?? '',
+          formId: assessmentPayload.formId ?? '',
+          name: `${user?.name ?? 'Pengguna'} Mengirimkan Penilaian`,
+          description: `${user?.name ?? 'Pengguna'} telah mengirimkan penilaian untuk formulir yang terkait.`,
           isRead: false,
           targetRole,
-        });
-
-        await createNotification({
-          formId: assessmentPayload.formId,
-          userId: userTargetId ?? '',
-          name: triggeringUser?.name ?? '',
-          description: 'telah mengisi formulir',
-          isRead: false,
-          targetRole: 'admin',
         });
 
         return await fetchAssessmentById(assessmentId);
@@ -435,155 +324,103 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
 
   // UPDATE FINAL ASSESSMENT
   const updateFinalAssessment = useCallback(
-    async (id: string, payload: Partial<Omit<AssessmentInterface, 'id' | 'createdAt' | 'updatedAt'>>, currentFinalAssessment?: FinalAssessmentInterface) => {
+    async (
+      id: string,
+      payload: Partial<Omit<AssessmentInterface, 'id' | 'createdAt' | 'updatedAt'>>,
+      currentFinalAssessment: FinalAssessmentInterface
+    ) => {
       if (!id) return null;
 
       try {
-        const { answers: payloadAnswers, ...restAssessmentsFields } = payload as any;
+        const { answers = [], ...restAssessmentFields } = payload as any;
+        const currentAnswers = currentFinalAssessment?.answers ?? [];
 
-        if (currentFinalAssessment) {
-          const assessmentUpdatePayload: Record<string, any> = {};
-          for (const k of Object.keys(restAssessmentsFields)) {
-            const newVal = restAssessmentsFields[k];
-            const oldVal = (currentFinalAssessment as any)[k];
-            const changed = typeof newVal === 'object' ? JSON.stringify(newVal) !== JSON.stringify(oldVal) : newVal !== oldVal;
-            if (newVal !== undefined && changed) assessmentUpdatePayload[k] = newVal;
-          }
-          if (Object.keys(assessmentUpdatePayload).length > 0) {
-            await updateAssessment(id, assessmentUpdatePayload);
-          }
-        } else {
-          if (Object.keys(restAssessmentsFields).length > 0) await updateAssessment(id, restAssessmentsFields);
+        const hasChanges = Object.keys(restAssessmentFields).some((key) => {
+          const newVal = restAssessmentFields[key];
+          const oldVal = (currentFinalAssessment as any)[key];
+          return newVal !== undefined && newVal !== oldVal;
+        });
+
+        if (hasChanges) {
+          await updateAssessment(id, restAssessmentFields);
         }
 
-        if (!Array.isArray(payloadAnswers)) {
-          return await fetchAssessmentById(id);
-        }
+        if (Array.isArray(answers) && answers.length > 0) {
+          await Promise.all(
+            answers.map(async (answer: any) => {
+              const currentAnswer = currentAnswers.find((ca) => ca.id === answer.id || ca.criteriaId === answer.criteriaId);
 
-        // eslint-disable-next-line no-unused-vars, @typescript-eslint/no-unused-vars
-        for (const [_, pc] of payloadAnswers.entries()) {
-          const { id: payloadAnsId, answerDetails: payloadAnswerDetails = [], ...answerFields } = pc as any;
+              if (currentAnswer) {
+                if (answer.averagePoint !== undefined && answer.averagePoint !== currentAnswer.averagePoint) {
+                  await updateAnswer(currentAnswer.id, { averagePoint: answer.averagePoint });
+                }
 
-          // CASE A: update existing answers
-          if (payloadAnsId) {
-            const critUpdate: Record<string, any> = {};
-            for (const k of Object.keys(answerFields)) {
-              const v = answerFields[k];
-              if (v !== undefined) critUpdate[k] = v;
-            }
-            if (Object.keys(critUpdate).length > 0) {
-              await updateAnswer(payloadAnsId, critUpdate);
-            }
+                if (Array.isArray(answer.answerDetails) && answer.answerDetails.length > 0) {
+                  const currentDetails = currentAnswer.answerDetails ?? [];
 
-            if (Array.isArray(payloadAnswerDetails) && payloadAnswerDetails.length > 0) {
-              await Promise.all(
-                payloadAnswerDetails.map(async (pq: any) => {
-                  const { id: payloadDId, ...qFields } = pq;
+                  await Promise.all(
+                    answer.answerDetails.map(async (detail: any) => {
+                      const currentDetail = currentDetails.find((cd) => cd.id === detail.id || cd.questionId === detail.questionId);
 
-                  if (payloadDId) {
-                    const dUpdate: Record<string, any> = {};
-                    if (qFields.text !== undefined) dUpdate.text = qFields.text;
-                    for (const k of Object.keys(qFields)) {
-                      if (k === 'text') continue;
-                      const vv = qFields[k];
-                      if (vv !== undefined) dUpdate[k] = vv;
-                    }
-                    if (Object.keys(dUpdate).length > 0) {
-                      await updateAnswerDetail(payloadDId, dUpdate);
-                    }
-                  } else {
-                    // create answer details for this existing answers
-                    await createAnswerDetail({
-                      ...qFields,
-                      answerId: payloadAnsId,
-                    } as PayloadCreateAnswerDetailInterface);
-                  }
-                })
-              );
-            }
-            continue;
-          }
-
-          // CASE B: create new answer + details
-          const createdAns = await createAnswer({
-            ...answerFields,
-            assessmentId: id,
-          } as PayloadCreateAnswerInterface);
-
-          const createdAnsId = (createdAns && (createdAns as any).id) ?? (typeof createdAns === 'string' ? createdAns : '');
-
-          if (!createdAnsId) continue;
-
-          if (Array.isArray(payloadAnswerDetails) && payloadAnswerDetails.length > 0) {
-            await Promise.all(
-              payloadAnswerDetails.map((pq: any) =>
-                createAnswerDetail({
-                  ...pq,
-                  answerId: createdAnsId,
-                } as PayloadCreateAnswerDetailInterface)
-              )
-            );
-          }
+                      if (currentDetail) {
+                        if (detail.point !== undefined && detail.point !== currentDetail.point) {
+                          await updateAnswerDetail(currentDetail.id, { point: detail.point });
+                        }
+                      } else {
+                        await createAnswerDetail({
+                          answerId: currentAnswer.id,
+                          questionId: detail.questionId,
+                          point: detail.point,
+                        });
+                      }
+                    })
+                  );
+                }
+              }
+            })
+          );
         }
 
         const updated = await fetchAssessmentById(id);
-
         if (updated) {
-          try {
-            setAllFinalAssessmentsCache((prev: any[]) => prev.map((u) => (u.id === updated.id ? updated : u)));
-            setFinalAssessmentsList((prev: any[]) => prev.map((u) => (u.id === updated.id ? updated : u)));
-            // eslint-disable-next-line no-empty
-          } catch (e) {}
+          setAllFinalAssessmentsCache((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+          setFinalAssessmentsList((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
         }
-
         return updated;
-      } catch (err) {
-        throw safeWrapError(err);
+      } catch (error) {
+        throw safeWrapError(error);
       }
     },
-    [createAnswer, createAnswerDetail, fetchAssessmentById, updateAnswer, updateAnswerDetail, updateAssessment]
+    [createAnswerDetail, fetchAssessmentById, updateAnswer, updateAnswerDetail, updateAssessment]
   );
 
   // DELETE FINAL ASSESSMENT
   const deleteFinalAssessment = useCallback(
     async (id: string): Promise<boolean> => {
       if (!id) return false;
+
       try {
-        const existingAnswers = (allAnswersCache || []).filter((c: any) => c.formId === id);
+        const answersToDelete = (allAnswersCache || []).filter((a) => a.assessmentId === id);
 
         await Promise.all(
-          existingAnswers.map(async (c: any) => {
-            const questionsForC = (allAnswerDetailsCache || []).filter((q: any) => q.criteriaId === c.id);
-            await Promise.all(questionsForC.map((q: any) => deleteAnswerDetail(q.id)));
-            await deleteAnswer(c.id);
+          answersToDelete.map(async (a) => {
+            const detailsToDelete = (allAnswerDetailsCache || []).filter((d) => d.answerId === a.id);
+            await Promise.all(detailsToDelete.map((d) => deleteAnswerDetail(d.id)));
+            await deleteAnswer(a.id);
           })
         );
 
         await deleteAssessment(id);
 
-        setAllFinalAssessmentsCache((prev) => prev.filter((u) => u.id !== id));
-        setFinalAssessmentsList((prev) => prev.filter((u) => u.id !== id));
-
+        setAllFinalAssessmentsCache((prev) => prev.filter((a) => a.id !== id));
+        setFinalAssessmentsList((prev) => prev.filter((a) => a.id !== id));
         return true;
-      } catch (err) {
-        throw safeWrapError(err);
+      } catch (error) {
+        throw safeWrapError(error);
       }
     },
     [allAnswerDetailsCache, allAnswersCache, deleteAnswer, deleteAnswerDetail, deleteAssessment]
   );
-
-  // CLEANUP ON UNMONT
-  useEffect(() => {
-    return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-    };
-  }, []);
-
-  const hasNext = page < Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-  const hasPrev = page > 1;
 
   return {
     finalAssessmentsList,
@@ -591,17 +428,17 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
     page,
     perPage: perPageRef.current,
     maxPages: Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current)),
-    hasNext,
-    hasPrev,
+    hasNext: page < Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current)),
+    hasPrev: page > 1,
     finalAssessments,
     nextPage,
     prevPage,
     resetPagination,
     getFinalAssessmentById,
     fetchFinalAssessmentById,
+    allFinalAssessmentsCache,
     createFinalAssessment,
     updateFinalAssessment,
     deleteFinalAssessment,
-    allFinalAssessmentsCache,
   };
 };

@@ -1,26 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  orderBy,
-  getDocs,
-  limit as fbLimit,
-  startAfter,
-  QueryDocumentSnapshot,
-  Timestamp,
-  updateDoc,
-  serverTimestamp,
-  getDoc,
-  deleteDoc,
-  doc,
-  setDoc,
-  getCountFromServer,
-} from 'firebase/firestore';
 import { v4 as uuidv4 } from 'uuid';
-// firebase
-import { fbFirestore } from '/src/firebase';
+// supabase
+import { supabase } from '/src/lib/supabase';
 // interfaces
 import { PayloadCreateStudentInterface, StudentInterface, StudentsParamsInterface } from '/src/interfaces/student';
 
@@ -43,10 +24,10 @@ export interface UseDatabaseStudentInterface {
   resetPagination: () => void;
   subscribePage: (pageIndex: number) => void;
   // helpers
-  getStudentById: (id: string) => StudentInterface | null; // local
-  fetchStudentById: (id: string) => Promise<StudentInterface | null>; // cloud
+  getStudentById: (id: string) => StudentInterface | null;
+  fetchStudentById: (id: string) => Promise<StudentInterface | null>;
   // raw
-  allStudentsCache: StudentInterface[]; // optional cache maintained by a background listener (kept small cost)
+  allStudentsCache: StudentInterface[];
   //
   createStudent: (payload: PayloadCreateStudentInterface) => Promise<void>;
   updateStudent: (id: string, payload: Partial<Omit<StudentInterface, 'id' | 'createdAt' | 'updatedAt'>>) => Promise<StudentInterface | null>;
@@ -58,100 +39,82 @@ export interface UseDatabaseStudentInterface {
 const mapStudent = (data: any): StudentInterface => ({
   id: data.id,
   name: data.name,
-  nameLowercase: data.nameLowercase,
+  nameLowercase: data.name_lowercase ?? data.nameLowercase,
   class: data.class,
-  identityNumber: data.identityNumber,
-  parentId: data.parentId,
-  createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(data.createdAt),
-  updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(data.updatedAt),
+  identityNumber: data.identity_number ?? data.identityNumber,
+  parentId: data.parent_id ?? data.parentId,
+  createdAt: new Date(data.created_at ?? data.createdAt),
+  updatedAt: new Date(data.updated_at ?? data.updatedAt),
 });
 
 // ----------------------------------------------------------------------
 
 export const useDatabaseStudent = (): UseDatabaseStudentInterface => {
   const [allStudentsCache, setAllStudentsCache] = useState<StudentInterface[]>([]);
-
   const [studentsList, setStudentsList] = useState<StudentInterface[]>([]);
-
   const [isLoading, setIsLoading] = useState<boolean>(false);
-
   const [totalCount, setTotalCount] = useState<number>(0);
-
   const [page, setPage] = useState<number>(1);
 
   const perPageRef = useRef<number>(5);
-
   const limitRef = useRef<number>(50);
-
-  const cursorsRef = useRef<QueryDocumentSnapshot<any>[] | null[]>([null]);
-
-  const lastVisibleRef = useRef<QueryDocumentSnapshot<any> | null>(null);
-
   const paramsRef = useRef<StudentsParamsInterface>({ class: '', parentId: '', search: '', limit: 50, perPage: 5 });
-
   const unsubscribeRef = useRef<(() => void) | null>(null);
 
   // ALL STUDENT CACHE
   useEffect(() => {
-    const q = query(collection(fbFirestore, 'students'), orderBy('createdAt'));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const arr: StudentInterface[] = [];
-        snap.forEach((d) => arr.push(mapStudent({ id: d.id, ...d.data() })));
-        setAllStudentsCache(arr);
-      },
-      (err) => {
-        console.error('allStudentsCache snapshot error', err);
-        setAllStudentsCache([]);
+    let cancelled = false;
+
+    const fetchAll = async () => {
+      const { data } = await supabase.from('students').select('*').order('created_at', { ascending: true });
+      if (!cancelled && data) {
+        setAllStudentsCache(data.map(mapStudent));
       }
-    );
+    };
+
+    fetchAll();
+
+    // Realtime
+    const channel = supabase
+      .channel(`students-cache-${uuidv4()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'students' }, () => {
+        fetchAll();
+      })
+      .subscribe();
 
     return () => {
-      unsub();
+      cancelled = true;
+      supabase.removeChannel(channel);
       setAllStudentsCache([]);
     };
   }, []);
 
-  const buildQueryForPage = useCallback((pageIndex: number) => {
-    const { class: classFilter, parentId, search } = paramsRef.current;
-    const pageSize = perPageRef.current;
+  const fetchTotalCount = useCallback(async () => {
+    try {
+      const { class: classFilter, parentId, search } = paramsRef.current;
 
-    const qParts: any[] = [];
+      let q = supabase.from('students').select('*', { count: 'exact', head: true });
 
-    if (classFilter) {
-      qParts.push(where('class', '==', classFilter));
+      if (classFilter) q = q.eq('class', classFilter);
+      if (parentId) q = q.eq('parent_id', parentId);
+      if (search) {
+        const keyword = search.toLowerCase().trim();
+        q = q.gte('name_lowercase', keyword).lte('name_lowercase', keyword + '\uf8ff');
+      }
+
+      const { count } = await q;
+      setTotalCount(count ?? 0);
+    } catch {
+      setTotalCount(0);
     }
-
-    if (parentId) {
-      qParts.push(where('parentId', '==', parentId));
-    }
-
-    if (search) {
-      const keyword = search.toLowerCase().trim();
-      qParts.push(orderBy('nameLowercase'));
-      qParts.push(where('nameLowercase', '>=', keyword));
-      qParts.push(where('nameLowercase', '<=', keyword + '\uf8ff'));
-    } else {
-      qParts.push(orderBy('createdAt', 'desc'));
-    }
-
-    if (pageIndex > 1) {
-      const cursor = cursorsRef.current[pageIndex - 1];
-      if (cursor) qParts.push(startAfter(cursor));
-    }
-
-    qParts.push(fbLimit(pageSize));
-
-    return query(collection(fbFirestore, 'students'), ...qParts);
   }, []);
 
   const subscribePage = useCallback(
-    (pageIndex: number) => {
-      const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
+    async (pageIndex: number) => {
+      const perPage = perPageRef.current;
+      const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPage));
       if (pageIndex < 1 || pageIndex > max) return;
 
-      // cleanup previous subscription
       if (unsubscribeRef.current) {
         unsubscribeRef.current();
         unsubscribeRef.current = null;
@@ -159,86 +122,48 @@ export const useDatabaseStudent = (): UseDatabaseStudentInterface => {
 
       setIsLoading(true);
 
-      const q = buildQueryForPage(pageIndex);
+      try {
+        const { class: classFilter, parentId, search } = paramsRef.current;
+        const from = (pageIndex - 1) * perPage;
+        const to = from + perPage - 1;
 
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          console.info('[paginate snapshot] page', pageIndex, 'size', snap.size);
-          const list: StudentInterface[] = [];
-          snap.forEach((d) => {
-            list.push(mapStudent({ id: d.id, ...d.data() }));
-          });
+        let q = supabase.from('students').select('*');
 
-          setStudentsList(list);
-          setIsLoading(false);
-
-          const last = snap.docs[snap.docs.length - 1] ?? null;
-          lastVisibleRef.current = last || null;
-          cursorsRef.current[pageIndex] = last || null;
-        },
-        (err) => {
-          console.error('paginate snapshot error', err.code, err.message);
-          setIsLoading(false);
+        if (classFilter) q = q.eq('class', classFilter);
+        if (parentId) q = q.eq('parent_id', parentId);
+        if (search) {
+          const keyword = search.toLowerCase().trim();
+          q = q.gte('name_lowercase', keyword).lte('name_lowercase', keyword + '\uf8ff').order('name_lowercase');
+        } else {
+          q = q.order('created_at', { ascending: false });
         }
-      );
 
-      unsubscribeRef.current = unsub;
+        q = q.range(from, to);
+
+        const { data } = await q;
+        setStudentsList((data ?? []).map(mapStudent));
+      } finally {
+        setIsLoading(false);
+      }
+
       setPage(pageIndex);
     },
-    [buildQueryForPage]
+    []
   );
-
-  const fetchTotalCount = useCallback(async () => {
-    try {
-      const { class: classFilter, parentId, search } = paramsRef.current;
-
-      const constraints: any[] = [];
-
-      if (classFilter) {
-        constraints.push(where('class', '==', classFilter));
-      }
-
-      if (parentId) {
-        constraints.push(where('parentId', '==', parentId));
-      }
-
-      if (search) {
-        const keyword = search.toLowerCase().trim();
-        constraints.push(orderBy('nameLowercase'));
-        constraints.push(where('nameLowercase', '>=', keyword));
-        constraints.push(where('nameLowercase', '<=', keyword + '\uf8ff'));
-      }
-
-      const q = query(collection(fbFirestore, 'students'), ...constraints);
-
-      const countSnap = await getCountFromServer(q);
-      const total = Number(countSnap.data().count ?? 0);
-
-      setTotalCount(total);
-    } catch (err) {
-      console.error('fetchTotalCount error', err);
-      setTotalCount(0);
-    }
-  }, []);
 
   const students = useCallback(
     (params?: StudentsParamsInterface) => {
-      const classFilter = params?.class ?? '';
-      const parentId = params?.parentId ?? '';
-      const search = params?.search ?? '';
-      const limit = params?.limit ?? 50;
-      const perPage = params?.perPage ?? 5;
-
-      paramsRef.current = { class: classFilter, parentId, search, limit, perPage };
-      limitRef.current = limit;
-      perPageRef.current = perPage;
-
-      cursorsRef.current = [null];
-      lastVisibleRef.current = null;
+      paramsRef.current = {
+        class: params?.class ?? '',
+        parentId: params?.parentId ?? '',
+        search: params?.search ?? '',
+        limit: params?.limit ?? 50,
+        perPage: params?.perPage ?? 5,
+      };
+      limitRef.current = params?.limit ?? 50;
+      perPageRef.current = params?.perPage ?? 5;
 
       fetchTotalCount();
-
       subscribePage(1);
     },
     [fetchTotalCount, subscribePage]
@@ -247,12 +172,7 @@ export const useDatabaseStudent = (): UseDatabaseStudentInterface => {
   const nextPage = useCallback(() => {
     const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
     if (page >= max) return;
-    const cursorForNext = cursorsRef.current[page];
-    if (!cursorForNext) {
-      subscribePage(page + 1);
-    } else {
-      subscribePage(page + 1);
-    }
+    subscribePage(page + 1);
   }, [page, subscribePage]);
 
   const prevPage = useCallback(() => {
@@ -261,13 +181,6 @@ export const useDatabaseStudent = (): UseDatabaseStudentInterface => {
   }, [page, subscribePage]);
 
   const resetPagination = useCallback(() => {
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current();
-      unsubscribeRef.current = null;
-    }
-
-    cursorsRef.current = [null];
-    lastVisibleRef.current = null;
     setStudentsList([]);
     setPage(1);
     setIsLoading(false);
@@ -285,42 +198,46 @@ export const useDatabaseStudent = (): UseDatabaseStudentInterface => {
   const fetchStudentById = useCallback(async (id: string): Promise<StudentInterface | null> => {
     if (!id) return null;
     try {
-      const q = query(collection(fbFirestore, 'students'), where('id', '==', id), fbLimit(1));
-      const snap = await getDocs(q);
-      if (snap.empty) return null;
-      const docSnap = snap.docs[0];
-      return mapStudent({ id: docSnap.id, ...docSnap.data() });
-    } catch (err) {
-      console.error('fetchStudentById error', err);
+      const { data } = await supabase.from('students').select('*').eq('id', id).limit(1).single();
+      return data ? mapStudent(data) : null;
+    } catch {
       return null;
     }
   }, []);
 
   const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
-  // CRAETE STUDENT
+  // CREATE STUDENT
   const createStudent = useCallback(async (payload: PayloadCreateStudentInterface) => {
     try {
       const sanitizedIdentityNumber = payload.identityNumber.trim();
       const sanitizedParentId = (payload.parentId ?? '').trim();
 
-      const duplicateIdentityQuery = query(collection(fbFirestore, 'students'), where('identityNumber', '==', sanitizedIdentityNumber), fbLimit(1));
-      const duplicateIdentitySnapshot = await getDocs(duplicateIdentityQuery);
+      const { data: existing } = await supabase
+        .from('students')
+        .select('id')
+        .eq('identity_number', sanitizedIdentityNumber)
+        .limit(1);
 
-      if (!duplicateIdentitySnapshot.empty) {
+      if (existing && existing.length > 0) {
         throw new Error('NIS sudah terdaftar');
       }
 
       const docId = uuidv4();
+      const now = new Date().toISOString();
 
-      await setDoc(doc(fbFirestore, 'students', docId), {
+      const { error } = await supabase.from('students').insert({
         id: docId,
-        ...payload,
-        identityNumber: sanitizedIdentityNumber,
-        parentId: sanitizedParentId,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        name: payload.name,
+        name_lowercase: (payload.nameLowercase ?? payload.name).toLowerCase(),
+        class: payload.class,
+        identity_number: sanitizedIdentityNumber,
+        parent_id: sanitizedParentId || null,
+        created_at: now,
+        updated_at: now,
       });
+
+      if (error) throw new Error(error.message);
     } catch (error) {
       throw safeWrapError(error);
     }
@@ -332,82 +249,50 @@ export const useDatabaseStudent = (): UseDatabaseStudentInterface => {
       if (!id) return null;
 
       try {
-        const sanitizedPayload = { ...payload };
+        const updateData: Record<string, any> = { updated_at: new Date().toISOString() };
 
-        if (typeof sanitizedPayload.identityNumber === 'string') {
-          sanitizedPayload.identityNumber = sanitizedPayload.identityNumber.trim();
+        if (payload.name !== undefined) updateData.name = payload.name;
+        if (payload.nameLowercase !== undefined) updateData.name_lowercase = payload.nameLowercase;
+        if (payload.class !== undefined) updateData.class = payload.class;
+        if (payload.identityNumber !== undefined) {
+          const sanitized = payload.identityNumber.trim();
+          const { data: existing } = await supabase.from('students').select('id').eq('identity_number', sanitized).neq('id', id).limit(1);
+          if (existing && existing.length > 0) throw new Error('NIS sudah terdaftar');
+          updateData.identity_number = sanitized;
         }
+        if (payload.parentId !== undefined) updateData.parent_id = payload.parentId?.trim() || null;
 
-        if (typeof sanitizedPayload.parentId === 'string') {
-          sanitizedPayload.parentId = sanitizedPayload.parentId.trim();
-        }
+        const { data, error } = await supabase.from('students').update(updateData).eq('id', id).select().single();
 
-        if (sanitizedPayload.identityNumber) {
-          const duplicateIdentityQuery = query(collection(fbFirestore, 'students'), where('identityNumber', '==', sanitizedPayload.identityNumber), fbLimit(2));
-          const duplicateIdentitySnapshot = await getDocs(duplicateIdentityQuery);
-          const duplicateIdentityExists = duplicateIdentitySnapshot.docs.some((snapshotDoc) => snapshotDoc.id !== id);
+        if (error) throw new Error(error.message);
 
-          if (duplicateIdentityExists) {
-            throw new Error('NIS sudah terdaftar');
-          }
-        }
-
-        const docRef = doc(fbFirestore, 'students', id);
-        await updateDoc(docRef, {
-          ...sanitizedPayload,
-          updatedAt: serverTimestamp(),
-        });
-
-        const snap = await getDoc(docRef);
-        if (!snap.exists()) return null;
-
-        const updated = mapStudent(snap.data());
-
+        const updated = mapStudent(data);
         setAllStudentsCache((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
         setStudentsList((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
-
         return updated;
       } catch (err) {
         throw safeWrapError(err);
       }
     },
-    [setAllStudentsCache, setStudentsList]
+    []
   );
 
   // DELETE STUDENT
-  const deleteStudent = useCallback(
-    async (id: string): Promise<boolean> => {
-      if (!id) return false;
-
-      try {
-        const docRef = doc(fbFirestore, 'students', id);
-        await deleteDoc(docRef);
-
-        setAllStudentsCache((prev) => prev.filter((u) => u.id !== id));
-        setStudentsList((prev) => prev.filter((u) => u.id !== id));
-
-        return true;
-      } catch (err) {
-        throw safeWrapError(err);
-      }
-    },
-    [setAllStudentsCache, setStudentsList]
-  );
-
-  // CLEANUP ON UNMONT
-  useEffect(() => {
-    return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-    };
+  const deleteStudent = useCallback(async (id: string): Promise<boolean> => {
+    if (!id) return false;
+    try {
+      const { error } = await supabase.from('students').delete().eq('id', id);
+      if (error) throw new Error(error.message);
+      setAllStudentsCache((prev) => prev.filter((u) => u.id !== id));
+      setStudentsList((prev) => prev.filter((u) => u.id !== id));
+      return true;
+    } catch (err) {
+      throw safeWrapError(err);
+    }
   }, []);
 
   const maxPages = Math.max(1, Math.ceil((totalCount || limitRef.current || 50) / perPageRef.current));
-
   const hasNext = page < maxPages;
-
   const hasPrev = page > 1;
 
   return {
@@ -415,7 +300,7 @@ export const useDatabaseStudent = (): UseDatabaseStudentInterface => {
     isLoading,
     page,
     perPage: perPageRef.current,
-    maxPages: Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current)),
+    maxPages,
     hasNext,
     hasPrev,
     students,

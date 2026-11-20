@@ -1,25 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  orderBy,
-  getDocs,
-  limit as fbLimit,
-  startAfter,
-  QueryDocumentSnapshot,
-  Timestamp,
-  updateDoc,
-  serverTimestamp,
-  getDoc,
-  deleteDoc,
-  doc,
-  setDoc,
-} from 'firebase/firestore';
 import { v4 as uuidv4 } from 'uuid';
-// firebase
-import { fbFirestore } from '/src/firebase';
+// supabase
+import { supabase } from '/src/lib/supabase';
 // interfaces
 import { CriteriaInterface, PayloadCreateCriteriaInterface, CriteriasParamsInterface } from '/src/interfaces/criteria';
 
@@ -28,30 +10,19 @@ import { CriteriaInterface, PayloadCreateCriteriaInterface, CriteriasParamsInter
 export interface UseDatabaseCriteriaInterface {
   criteriasList: CriteriaInterface[];
   isLoading: boolean;
-  // pagination meta
   page: number;
   perPage: number;
   maxPages: number;
   hasNext: boolean;
   hasPrev: boolean;
-  // controls
   criterias: (params?: CriteriasParamsInterface) => void;
   nextPage: () => void;
   prevPage: () => void;
   resetPagination: () => void;
-  // helpers
-  getCriteriaById: (id: string) => CriteriaInterface | null; // local
-  fetchCriteriaById: (id: string) => Promise<CriteriaInterface | null>; // cloud
-  // raw
-  allCriteriasCache: CriteriaInterface[]; // optional cache maintained by a background listener (kept small cost)
-  //
-  createCriteria: (payload: PayloadCreateCriteriaInterface) => Promise<{
-    formId: string;
-    title: string;
-    description: string;
-    weight: number;
-    id: string;
-  }>;
+  getCriteriaById: (id: string) => CriteriaInterface | null;
+  fetchCriteriaById: (id: string) => Promise<CriteriaInterface | null>;
+  allCriteriasCache: CriteriaInterface[];
+  createCriteria: (payload: PayloadCreateCriteriaInterface) => Promise<{ formId: string; title: string; description: string; weight: number; id: string }>;
   updateCriteria: (id: string, payload: Partial<Omit<CriteriaInterface, 'id' | 'createdAt' | 'updatedAt'>>) => Promise<CriteriaInterface | null>;
   deleteCriteria: (id: string) => Promise<boolean>;
 }
@@ -60,152 +31,87 @@ export interface UseDatabaseCriteriaInterface {
 
 const mapCriteria = (data: any): CriteriaInterface => ({
   id: data.id,
-  formId: data.formId,
+  formId: data.form_id ?? data.formId,
   title: data.title,
   description: data.description,
   weight: data.weight,
-  createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(data.createdAt),
-  updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(data.updatedAt),
+  createdAt: new Date(data.created_at ?? data.createdAt),
+  updatedAt: new Date(data.updated_at ?? data.updatedAt),
 });
 
 // ----------------------------------------------------------------------
 
 export const useDatabaseCriteria = (): UseDatabaseCriteriaInterface => {
   const [allCriteriasCache, setAllCriteriasCache] = useState<CriteriaInterface[]>([]);
-
   const [criteriasList, setCriteriasList] = useState<CriteriaInterface[]>([]);
-
   const [isLoading, setIsLoading] = useState<boolean>(false);
-
   const [page, setPage] = useState<number>(1);
 
   const perPageRef = useRef<number>(5);
-
   const limitRef = useRef<number>(50);
-
-  const cursorsRef = useRef<QueryDocumentSnapshot<any>[] | null[]>([null]);
-
-  const lastVisibleRef = useRef<QueryDocumentSnapshot<any> | null>(null);
-
   const paramsRef = useRef<CriteriasParamsInterface>({ formId: '', limit: 50, perPage: 5 });
 
-  const unsubscribeRef = useRef<(() => void) | null>(null);
-
-  // ALL CRITERIA CACHE
+  // ALL CRITERIAS CACHE
   useEffect(() => {
-    const q = query(collection(fbFirestore, 'criterias'), orderBy('createdAt'));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const arr: CriteriaInterface[] = [];
-        snap.forEach((d) => arr.push(mapCriteria({ id: d.id, ...d.data() })));
-        setAllCriteriasCache(arr);
-      },
-      (err) => {
-        console.error('allCriteriasCache snapshot error', err);
-        setAllCriteriasCache([]);
-      }
-    );
+    let cancelled = false;
+
+    const fetchAll = async () => {
+      const { data } = await supabase.from('criterias').select('*').order('created_at', { ascending: true });
+      if (!cancelled && data) setAllCriteriasCache(data.map(mapCriteria));
+    };
+
+    fetchAll();
+
+    const channel = supabase
+      .channel(`criterias-cache-${uuidv4()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'criterias' }, () => fetchAll())
+      .subscribe();
 
     return () => {
-      unsub();
+      cancelled = true;
+      supabase.removeChannel(channel);
       setAllCriteriasCache([]);
     };
   }, []);
 
-  const buildQueryForPage = useCallback((pageIndex: number) => {
-    const { formId } = paramsRef.current;
-    const pageSize = perPageRef.current;
+  const subscribePage = useCallback(async (pageIndex: number) => {
+    const perPage = perPageRef.current;
+    const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPage));
+    if (pageIndex < 1 || pageIndex > max) return;
 
-    const collectionRef = collection(fbFirestore, 'criterias');
-    const qParts: any[] = [];
+    setIsLoading(true);
 
-    if (formId) qParts.push(where('formId', '==', formId));
+    try {
+      const { formId } = paramsRef.current;
+      const from = (pageIndex - 1) * perPage;
+      const to = from + perPage - 1;
 
-    qParts.push(orderBy('createdAt', 'desc'));
+      let q = supabase.from('criterias').select('*').order('created_at', { ascending: false });
+      if (formId) q = q.eq('form_id', formId);
+      q = q.range(from, to);
 
-    if (pageIndex > 1) {
-      const cursor = cursorsRef.current[pageIndex - 1] ?? null;
-      if (cursor) {
-        qParts.push(startAfter(cursor));
-      }
+      const { data } = await q;
+      setCriteriasList((data ?? []).map(mapCriteria));
+    } finally {
+      setIsLoading(false);
     }
 
-    qParts.push(fbLimit(pageSize));
-
-    return query(collectionRef, ...qParts);
+    setPage(pageIndex);
   }, []);
-
-  const subscribePage = useCallback(
-    (pageIndex: number) => {
-      const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-      if (pageIndex < 1 || pageIndex > max) return;
-
-      // cleanup previous subscription
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-
-      setIsLoading(true);
-
-      const q = buildQueryForPage(pageIndex);
-
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          console.info('[paginate snapshot] page', pageIndex, 'size', snap.size);
-          const list: CriteriaInterface[] = [];
-          snap.forEach((d) => {
-            list.push(mapCriteria({ id: d.id, ...d.data() }));
-          });
-
-          setCriteriasList(list);
-          setIsLoading(false);
-
-          const last = snap.docs[snap.docs.length - 1] ?? null;
-          lastVisibleRef.current = last || null;
-          cursorsRef.current[pageIndex] = last || null;
-        },
-        (err) => {
-          console.error('paginate snapshot error', err.code, err.message);
-          setIsLoading(false);
-        }
-      );
-
-      unsubscribeRef.current = unsub;
-      setPage(pageIndex);
-    },
-    [buildQueryForPage]
-  );
 
   const criterias = useCallback(
     (params?: CriteriasParamsInterface) => {
-      const formId = params?.formId ?? '';
-      const limit = params?.limit ?? 50;
-      const perPage = params?.perPage ?? 5;
-
-      paramsRef.current = { formId, limit, perPage };
-      limitRef.current = limit;
-      perPageRef.current = perPage;
-
-      cursorsRef.current = [null];
-      lastVisibleRef.current = null;
-
+      paramsRef.current = { formId: params?.formId ?? '', limit: params?.limit ?? 50, perPage: params?.perPage ?? 5 };
+      limitRef.current = params?.limit ?? 50;
+      perPageRef.current = params?.perPage ?? 5;
       subscribePage(1);
     },
     [subscribePage]
   );
 
   const nextPage = useCallback(() => {
-    const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-    if (page >= max) return;
-    const cursorForNext = cursorsRef.current[page];
-    if (!cursorForNext) {
-      subscribePage(page + 1);
-    } else {
-      subscribePage(page + 1);
-    }
+    if (page >= Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current))) return;
+    subscribePage(page + 1);
   }, [page, subscribePage]);
 
   const prevPage = useCallback(() => {
@@ -214,19 +120,11 @@ export const useDatabaseCriteria = (): UseDatabaseCriteriaInterface => {
   }, [page, subscribePage]);
 
   const resetPagination = useCallback(() => {
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current();
-      unsubscribeRef.current = null;
-    }
-
-    cursorsRef.current = [null];
-    lastVisibleRef.current = null;
     setCriteriasList([]);
     setPage(1);
     setIsLoading(false);
   }, []);
 
-  // LOCAL GETTER
   const getCriteriaById = useCallback(
     (id: string): CriteriaInterface | null => {
       if (!id) return null;
@@ -238,100 +136,73 @@ export const useDatabaseCriteria = (): UseDatabaseCriteriaInterface => {
   const fetchCriteriaById = useCallback(async (id: string): Promise<CriteriaInterface | null> => {
     if (!id) return null;
     try {
-      const q = query(collection(fbFirestore, 'criterias'), where('id', '==', id), fbLimit(1));
-      const snap = await getDocs(q);
-      if (snap.empty) return null;
-      const docSnap = snap.docs[0];
-      return mapCriteria({ id: docSnap.id, ...docSnap.data() });
-    } catch (err) {
-      console.error('fetchCriteriaById error', err);
+      const { data } = await supabase.from('criterias').select('*').eq('id', id).limit(1).single();
+      return data ? mapCriteria(data) : null;
+    } catch {
       return null;
     }
   }, []);
 
   const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
-  // CRAETE CRITERIA
   const createCriteria = useCallback(async (payload: PayloadCreateCriteriaInterface) => {
     try {
       const docId = uuidv4();
-
-      await setDoc(doc(fbFirestore, 'criterias', docId), {
+      const now = new Date().toISOString();
+      const { error } = await supabase.from('criterias').insert({
         id: docId,
-        ...payload,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        form_id: payload.formId,
+        title: payload.title,
+        description: payload.description,
+        weight: payload.weight,
+        created_at: now,
+        updated_at: now,
       });
-
-      return {
-        id: docId,
-        ...payload,
-      };
+      if (error) throw new Error(error.message);
+      return { id: docId, ...payload };
     } catch (error) {
       throw safeWrapError(error);
     }
   }, []);
 
-  // UPDATE CRITERIA
   const updateCriteria = useCallback(
     async (id: string, payload: Partial<Omit<CriteriaInterface, 'id' | 'createdAt' | 'updatedAt'>>): Promise<CriteriaInterface | null> => {
       if (!id) return null;
-
       try {
-        const docRef = doc(fbFirestore, 'criterias', id);
-        await updateDoc(docRef, {
-          ...payload,
-          updatedAt: serverTimestamp(),
-        });
+        const updateData: Record<string, any> = { updated_at: new Date().toISOString() };
+        if (payload.formId !== undefined) updateData.form_id = payload.formId;
+        if (payload.title !== undefined) updateData.title = payload.title;
+        if (payload.description !== undefined) updateData.description = payload.description;
+        if (payload.weight !== undefined) updateData.weight = payload.weight;
 
-        const snap = await getDoc(docRef);
-        if (!snap.exists()) return null;
+        const { data, error } = await supabase.from('criterias').update(updateData).eq('id', id).select().single();
+        if (error) throw new Error(error.message);
 
-        const updated = mapCriteria(snap.data());
-
+        const updated = mapCriteria(data);
         setAllCriteriasCache((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
         setCriteriasList((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
-
         return updated;
       } catch (err) {
         throw safeWrapError(err);
       }
     },
-    [setAllCriteriasCache, setCriteriasList]
+    []
   );
 
-  // DELETE CRITERIA
-  const deleteCriteria = useCallback(
-    async (id: string): Promise<boolean> => {
-      if (!id) return false;
-
-      try {
-        const docRef = doc(fbFirestore, 'criterias', id);
-        await deleteDoc(docRef);
-
-        setAllCriteriasCache((prev) => prev.filter((u) => u.id !== id));
-        setCriteriasList((prev) => prev.filter((u) => u.id !== id));
-
-        return true;
-      } catch (err) {
-        throw safeWrapError(err);
-      }
-    },
-    [setAllCriteriasCache, setCriteriasList]
-  );
-
-  // CLEANUP ON UNMONT
-  useEffect(() => {
-    return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-    };
+  const deleteCriteria = useCallback(async (id: string): Promise<boolean> => {
+    if (!id) return false;
+    try {
+      const { error } = await supabase.from('criterias').delete().eq('id', id);
+      if (error) throw new Error(error.message);
+      setAllCriteriasCache((prev) => prev.filter((u) => u.id !== id));
+      setCriteriasList((prev) => prev.filter((u) => u.id !== id));
+      return true;
+    } catch (err) {
+      throw safeWrapError(err);
+    }
   }, []);
 
   const hasNext = page < Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-
   const hasPrev = page > 1;
 
   return {

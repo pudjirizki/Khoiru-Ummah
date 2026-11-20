@@ -222,7 +222,20 @@ const StudentDetailView: React.FC<StudentDetailViewProps> = ({ slug }) => {
         </div>
       )}
 
-      {selectedStudent && <ReportExportControls student={selectedStudent} students={allStudentsCache} />}
+      {selectedStudent && (
+        <ReportExportControls
+          student={selectedStudent}
+          students={allStudentsCache}
+          forms={studentForms.length > 0 ? studentForms : (allFinalFormsCache as any)}
+          studentAssessments={studentAssessments}
+          allAssessments={allFinalAssessmentsCache}
+          users={allUsersCache}
+          selectedFormId={selectedFormId}
+          onSelectFormId={setSelectedFormId}
+          fetchFinalAssessmentById={fetchFinalAssessmentById}
+          fetchFinalFormById={fetchFinalFormById}
+        />
+      )}
 
       {selectedStudent && !isLoadingValue ? (
         <div className="mt-10 flex flex-col gap-6">

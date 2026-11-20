@@ -1,9 +1,14 @@
-import { User } from 'firebase/auth';
+import { User } from '@supabase/supabase-js';
 
 // ----------------------------------------------------------------------
 
-export interface CurrentUserInterface extends User {
+export interface CurrentUserInterface {
+  id: string;
+  email: string;
+  uid: string; // alias untuk auth id (Supabase user.id)
   databaseUsers: UserInterface | null;
+  photoURL?: string | null;
+  displayName?: string | null;
 }
 
 export interface UserInterface {

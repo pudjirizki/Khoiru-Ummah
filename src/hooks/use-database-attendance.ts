@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
-// firebase
+import { supabase } from '/src/lib/supabase';
+// firebase fallback
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { fbFirestore } from '/src/firebase';
 // interfaces
 import { TeacherAttendanceInterface, TeacherAttendanceStatus } from '/src/interfaces/attendance';
@@ -15,6 +16,19 @@ interface UseDatabaseAttendanceInterface {
 }
 
 const getAttendanceId = (teacherId: string, date: string) => `${teacherId}_${date}`;
+
+const mapAttendance = (d: any): TeacherAttendanceInterface => ({
+  id: d.id,
+  teacherId: d.teacher_id ?? d.teacherId,
+  teacherName: d.teacher_name ?? d.teacherName,
+  date: d.date,
+  status: d.status,
+  note: d.note ?? '',
+  isVerified: Boolean(d.is_verified ?? d.isVerified),
+  verifiedBy: d.verified_by ?? d.verifiedBy ?? null,
+  verifiedByName: d.verified_by_name ?? d.verifiedByName ?? null,
+  verifiedAt: d.verified_at ?? d.verifiedAt ?? null,
+});
 
 export const useDatabaseAttendance = (teacher: UserInterface | null, date: string): UseDatabaseAttendanceInterface => {
   const [attendance, setAttendance] = useState<TeacherAttendanceInterface | null>(null);
@@ -37,10 +51,44 @@ export const useDatabaseAttendance = (teacher: UserInterface | null, date: strin
 
       try {
         const attendanceId = getAttendanceId(teacherId, date);
-        const snapshot = await getDoc(doc(fbFirestore, 'teacherAttendances', attendanceId));
+
+        // 1. Try Supabase snake_case
+        let { data, error: err } = await supabase
+          .from('teacher_attendances')
+          .select('*')
+          .eq('id', attendanceId)
+          .maybeSingle();
+
+        // 2. Try Supabase camelCase
+        if (err) {
+          const { data: fallbackData, error: fallbackErr } = await supabase
+            .from('teacherAttendances')
+            .select('*')
+            .eq('id', attendanceId)
+            .maybeSingle();
+
+          if (!fallbackErr && fallbackData) {
+            data = fallbackData;
+            err = null;
+          }
+        }
+
+        // 3. Fallback to Firestore if table doesn't exist in Supabase
+        if (err) {
+          try {
+            const snap = await getDoc(doc(fbFirestore, 'teacherAttendances', attendanceId));
+            if (isCurrent) {
+              setAttendance(snap.exists() ? mapAttendance({ id: snap.id, ...(snap.data() as any) }) : null);
+            }
+            return;
+          } catch (fsErr) {
+            console.warn('Firestore fallback error:', fsErr);
+            throw err;
+          }
+        }
 
         if (isCurrent) {
-          setAttendance(snapshot.exists() ? (snapshot.data() as TeacherAttendanceInterface) : null);
+          setAttendance(data ? mapAttendance(data) : null);
         }
       } catch (loadError) {
         console.error('Failed to load teacher attendance', loadError);
@@ -65,7 +113,56 @@ export const useDatabaseAttendance = (teacher: UserInterface | null, date: strin
       setIsSaving(true);
       try {
         const id = getAttendanceId(teacherId, date);
-        const attendanceData = {
+        const now = new Date().toISOString();
+        const row = {
+          id,
+          teacher_id: teacherId,
+          teacher_name: teacher.name,
+          date,
+          status,
+          note: status === 'absent' ? note.trim() : '',
+          is_verified: false,
+          verified_by: null,
+          verified_by_name: null,
+          verified_at: null,
+          updated_at: now,
+        };
+
+        let { error: insertErr } = await supabase.from('teacher_attendances').upsert(row);
+        if (insertErr) {
+          const { error: insertErr2 } = await supabase.from('teacherAttendances').upsert({
+            id,
+            teacherId,
+            teacherName: teacher.name,
+            date,
+            status,
+            note: status === 'absent' ? note.trim() : '',
+            isVerified: false,
+            verifiedBy: null,
+            verifiedByName: null,
+            verifiedAt: null,
+            updatedAt: now,
+          });
+
+          if (insertErr2) {
+            // Fallback save to Firestore
+            await setDoc(doc(fbFirestore, 'teacherAttendances', id), {
+              id,
+              teacherId,
+              teacherName: teacher.name,
+              date,
+              status,
+              note: status === 'absent' ? note.trim() : '',
+              isVerified: false,
+              verifiedBy: null,
+              verifiedByName: null,
+              verifiedAt: null,
+              updatedAt: now,
+            }, { merge: true });
+          }
+        }
+
+        setAttendance({
           id,
           teacherId,
           teacherName: teacher.name,
@@ -76,27 +173,12 @@ export const useDatabaseAttendance = (teacher: UserInterface | null, date: strin
           verifiedBy: null,
           verifiedByName: null,
           verifiedAt: null,
-          updatedAt: serverTimestamp(),
-        };
-
-        await setDoc(
-          doc(fbFirestore, 'teacherAttendances', id),
-          {
-            ...attendanceData,
-            ...(!attendance ? { createdAt: serverTimestamp() } : {}),
-          },
-          { merge: true }
-        );
-
-        setAttendance({
-          ...attendanceData,
-          note: status === 'absent' ? note.trim() : '',
         });
       } finally {
         setIsSaving(false);
       }
     },
-    [attendance, date, teacher, teacherId]
+    [date, teacher, teacherId]
   );
 
   return { attendance, isLoading, isSaving, error, saveAttendance };

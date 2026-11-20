@@ -1,12 +1,14 @@
 import React, { useMemo, useCallback, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { doc, updateDoc, serverTimestamp, setDoc, getDoc, getDocs, Timestamp, deleteDoc, collection, query, where, limit as fbLimit } from 'firebase/firestore';
+// supabase
+import { supabase } from '/src/lib/supabase';
+// firebase (fallback)
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, deleteUser as deleteAuthUser, onAuthStateChanged } from 'firebase/auth';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { fbAuth, fbFirestore } from '/src/firebase';
+import { collection, query, where, limit as fbLimit, getDocs, doc, getDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 // utils
 import { fEncrypt } from '/src/utils/format-encrypt';
-// firebase
-import { fbAuth, fbFirestore } from '/src/firebase';
 // hooks
 import { useLocalStorage } from '/src/hooks/use-local-storage';
 // config-global
@@ -54,15 +56,15 @@ const initialState: InitialState = {
 
 const mapUser = (data: any): UserInterface => ({
   id: data.id,
-  authId: data.authId,
+  authId: data.auth_id ?? data.authId,
   name: data.name,
-  nameLowercase: data.nameLowercase,
-  phoneNumber: data.phoneNumber,
+  nameLowercase: data.name_lowercase ?? data.nameLowercase,
+  phoneNumber: data.phone_number ?? data.phoneNumber,
   role: data.role as RoleUserType,
   email: data.email,
   status: data.status,
-  createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(data.createdAt),
-  updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(data.updatedAt),
+  createdAt: new Date(data.created_at ?? data.createdAt),
+  updatedAt: new Date(data.updated_at ?? data.updatedAt),
 });
 
 const ACCESS_TOKEN_KEY = 'accessToken';
@@ -70,87 +72,206 @@ const ACCESS_TOKEN_KEY = 'accessToken';
 // ----------------------------------------------------------------------
 
 export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
-  const { state, update, reset } = useLocalStorage(USER_KEY, initialState) as { state: InitialState; update: (name: string, updateValue: Value) => void; reset: () => void };
+  const { state, update, reset } = useLocalStorage(USER_KEY, initialState) as {
+    state: InitialState;
+    update: (name: string, updateValue: Value) => void;
+    reset: () => void;
+  };
 
   const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
   const cleanupAuthSession = useCallback(async () => {
     sessionStorage.removeItem(ACCESS_TOKEN_KEY);
 
-    if (fbAuth.currentUser) {
-      await signOut(fbAuth);
-    }
+    try {
+      await supabase.auth.signOut();
+    } catch {}
+
+    try {
+      if (fbAuth.currentUser) {
+        await signOut(fbAuth);
+      }
+    } catch {}
 
     update('user', '');
     update('status', 'unauthenticated');
   }, [update]);
 
-  const ensureActiveUser = useCallback(async (authId: string) => {
-    const usersCollectionRef = collection(fbFirestore, 'users');
-    const q = query(usersCollectionRef, where('authId', '==', authId), fbLimit(1));
-    const snap = await getDocs(q);
+  // Ensure active user from Supabase with Firestore fallback
+  const ensureActiveUser = useCallback(async (authId: string, email?: string) => {
+    try {
+      let q = supabase.from('users').select('*');
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authId);
+      if (isUuid) {
+        q = q.or(`auth_id.eq.${authId},id.eq.${authId}${email ? `,email.eq.${email}` : ''}`);
+      } else if (email) {
+        q = q.eq('email', email);
+      } else {
+        q = q.eq('auth_id', authId);
+      }
 
-    if (snap.empty) {
-      throw new Error('Akun tidak ditemukan di database.');
+      const { data, error } = await q.limit(1);
+
+      if (!error && data && data.length > 0) {
+        const row = data[0];
+        if (row.status !== 'active') {
+          throw new Error('Akun Anda nonaktif. Silakan hubungi admin.');
+        }
+        return row;
+      }
+    } catch (supaErr: any) {
+      if (supaErr.message?.includes('nonaktif')) throw supaErr;
     }
 
-    const data = snap.docs[0]?.data();
-    if (data?.status !== 'active') {
-      throw new Error('Akun Anda nonaktif. Silakan hubungi admin.');
+    // Fallback: check Firestore if Supabase didn't find the user
+    try {
+      const usersCollectionRef = collection(fbFirestore, 'users');
+      const q = query(usersCollectionRef, where('authId', '==', authId), fbLimit(1));
+      const snap = await getDocs(q);
+
+      if (!snap.empty) {
+        const data = snap.docs[0]?.data();
+        if (data?.status !== 'active') {
+          throw new Error('Akun Anda nonaktif. Silakan hubungi admin.');
+        }
+        return data;
+      }
+    } catch (fsErr: any) {
+      if (fsErr.message?.includes('nonaktif')) throw fsErr;
     }
+
+    throw new Error('Akun tidak ditemukan di database.');
   }, []);
 
   // ----------------------------------------------------------------------
-
+  // Auth state listener
   useEffect(() => {
     update('isLoading', true);
 
-    const unsubscribe = onAuthStateChanged(fbAuth, async (user) => {
-      if (user) {
+    let isSubscribed = true;
+
+    // 1. Check Supabase session first
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!isSubscribed) return;
+
+      if (session?.user) {
         try {
-          await ensureActiveUser(user.uid);
-
-          const token = await user.getIdToken();
-          sessionStorage.setItem(ACCESS_TOKEN_KEY, token);
-
-          const encrypted = fEncrypt(user, USER_KEY);
+          await ensureActiveUser(session.user.id, session.user.email);
+          sessionStorage.setItem(ACCESS_TOKEN_KEY, session.access_token);
+          const minimalUser = {
+            uid: session.user.id,
+            id: session.user.id,
+            email: session.user.email,
+            displayName: session.user.user_metadata?.name ?? '',
+          };
+          const encrypted = fEncrypt(minimalUser, USER_KEY);
           update('user', encrypted);
           update('status', 'authenticated');
-        } catch (error) {
+          update('isLoading', false);
+          return;
+        } catch {
           await cleanupAuthSession();
         }
-      } else {
-        sessionStorage.removeItem(ACCESS_TOKEN_KEY);
-        update('user', '');
-        update('status', 'unauthenticated');
       }
 
-      update('isLoading', false);
+      // 2. Fallback to Firebase auth listener
+      const unsubscribeFb = onAuthStateChanged(fbAuth, async (user) => {
+        if (!isSubscribed) return;
+
+        if (user) {
+          try {
+            await ensureActiveUser(user.uid, user.email ?? undefined);
+            const token = await user.getIdToken();
+            sessionStorage.setItem(ACCESS_TOKEN_KEY, token);
+
+            const minimalUser = {
+              uid: user.uid,
+              id: user.uid,
+              email: user.email,
+              displayName: user.displayName ?? '',
+              photoURL: user.photoURL ?? null,
+            };
+            const encrypted = fEncrypt(minimalUser, USER_KEY);
+            update('user', encrypted);
+            update('status', 'authenticated');
+          } catch {
+            await cleanupAuthSession();
+          }
+        } else if (!session?.user) {
+          sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+          update('user', '');
+          update('status', 'unauthenticated');
+        }
+
+        update('isLoading', false);
+      });
+
+      return () => {
+        unsubscribeFb();
+      };
     });
 
-    return () => unsubscribe();
+    return () => {
+      isSubscribed = false;
+    };
   }, [cleanupAuthSession, ensureActiveUser, update]);
 
-  // LOGIN EMAIL
+  // LOGIN EMAIL (Supabase first, then Firebase)
   const onLoginEmail = useCallback(
     async ({ email, password }: PayloadLoginEmailAuthInterface) => {
       try {
         update('isLoading', true);
 
-        const userCredential = await signInWithEmailAndPassword(fbAuth, email, password);
+        const cleanEmail = email.trim();
+        const cleanPassword = password.trim();
 
-        const { user } = userCredential;
+        let loggedInUser: any = null;
+        let token: string | null = null;
 
-        if (user) {
-          await ensureActiveUser(user.uid);
+        // Try Supabase Auth first
+        try {
+          const { data: supaData, error: supaErr } = await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password: cleanPassword,
+          });
 
-          const accessToken = await user.getIdToken();
+          if (!supaErr && supaData?.user && supaData.session) {
+            loggedInUser = {
+              uid: supaData.user.id,
+              id: supaData.user.id,
+              email: supaData.user.email,
+              displayName: supaData.user.user_metadata?.name ?? '',
+            };
+            token = supaData.session.access_token;
+          }
+        } catch {}
 
-          const encrypted = fEncrypt(user, USER_KEY);
+        // Fallback: Try Firebase Auth
+        if (!loggedInUser) {
+          const userCredential = await signInWithEmailAndPassword(fbAuth, cleanEmail, cleanPassword);
+          const u = userCredential.user;
+          if (u) {
+            loggedInUser = {
+              uid: u.uid,
+              id: u.uid,
+              email: u.email,
+              displayName: u.displayName ?? '',
+              photoURL: u.photoURL ?? null,
+            };
+            token = await u.getIdToken();
+          }
+        }
 
-          sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+        if (loggedInUser) {
+          await ensureActiveUser(loggedInUser.uid, loggedInUser.email);
+          if (token) {
+            sessionStorage.setItem(ACCESS_TOKEN_KEY, token);
+          }
+          const encrypted = fEncrypt(loggedInUser, USER_KEY);
           update('user', encrypted);
           update('status', 'authenticated');
+        } else {
+          throw new Error('Email atau password salah');
         }
       } catch (error: any) {
         await cleanupAuthSession();
@@ -168,24 +289,27 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
       update('isLoading', true);
 
       const provider = new GoogleAuthProvider();
-
       const userCredential = await signInWithPopup(fbAuth, provider);
-
       const credential = GoogleAuthProvider.credentialFromResult(userCredential);
-
       const { user } = userCredential;
 
       if (user) {
-        await ensureActiveUser(user.uid);
+        await ensureActiveUser(user.uid, user.email ?? undefined);
       }
 
       if (credential) {
         const { accessToken } = credential;
-
-        const encrypted = fEncrypt(user, USER_KEY);
-
+        const minimalUser = {
+          uid: user.uid,
+          id: user.uid,
+          email: user.email,
+          displayName: user.displayName ?? '',
+          photoURL: user.photoURL ?? null,
+        };
+        const encrypted = fEncrypt(minimalUser, USER_KEY);
         sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken!);
         update('user', encrypted);
+        update('status', 'authenticated');
       }
     } catch (error: any) {
       await cleanupAuthSession();
@@ -204,54 +328,63 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
         const sanitizedEmail = payload.email.trim();
         const sanitizedPhoneNumber = payload.phoneNumber.trim();
 
-        const data: PayloadRegisterAuthInterface = {
+        // 1. Check duplicate in Supabase
+        const { data: existingUsers } = await supabase
+          .from('users')
+          .select('id, email, phone_number')
+          .or(`email.eq.${sanitizedEmail}${sanitizedPhoneNumber ? `,phone_number.eq.${sanitizedPhoneNumber}` : ''}`)
+          .limit(1);
+
+        if (existingUsers && existingUsers.length > 0) {
+          if (existingUsers[0].email === sanitizedEmail) throw new Error('Email sudah terdaftar');
+          if (existingUsers[0].phone_number === sanitizedPhoneNumber) throw new Error('Nomor telepon sudah terdaftar');
+        }
+
+        // 2. Create in Firebase Auth (for credentials)
+        let authId = uuidv4();
+        try {
+          const adminUser = fbAuth.currentUser;
+          const response = await createUserWithEmailAndPassword(fbAuth, sanitizedEmail, payload.password);
+          if (adminUser) {
+            await fbAuth.updateCurrentUser(adminUser);
+          }
+          if (response.user) {
+            authId = response.user.uid;
+          }
+        } catch {}
+
+        // 3. Also try Supabase SignUp if possible
+        try {
+          const { data: supaSignUp } = await supabase.auth.signUp({
+            email: sanitizedEmail,
+            password: payload.password,
+            options: { data: { name: payload.name, role: payload.role } },
+          });
+          if (supaSignUp?.user) {
+            authId = supaSignUp.user.id;
+          }
+        } catch {}
+
+        // 4. Insert into Supabase users table
+        const docId = uuidv4();
+        const now = new Date().toISOString();
+
+        const { error: insertError } = await supabase.from('users').insert({
+          id: docId,
+          auth_id: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authId) ? authId : null,
           name: payload.name,
-          nameLowercase: payload.name,
-          phoneNumber: sanitizedPhoneNumber,
+          name_lowercase: payload.name.toLowerCase(),
+          phone_number: sanitizedPhoneNumber,
           role: payload.role,
           email: sanitizedEmail,
-          password: payload.password,
           status: payload.status,
-        };
-
-        // eslint-disable-next-line no-unused-vars
-        const { password, ...dataFirestore } = data;
-
-        const usersCollectionRef = collection(fbFirestore, 'users');
-
-        const duplicateEmailQuery = query(usersCollectionRef, where('email', '==', data.email), fbLimit(1));
-        const duplicatePhoneQuery = data.phoneNumber ? query(usersCollectionRef, where('phoneNumber', '==', data.phoneNumber), fbLimit(1)) : null;
-
-        const [duplicateEmailSnapshot, duplicatePhoneSnapshot] = await Promise.all([getDocs(duplicateEmailQuery), duplicatePhoneQuery ? getDocs(duplicatePhoneQuery) : Promise.resolve(null)]);
-
-        if (!duplicateEmailSnapshot.empty) {
-          throw new Error('Email sudah terdaftar');
-        }
-
-        if (duplicatePhoneSnapshot && !duplicatePhoneSnapshot.empty) {
-          throw new Error('Nomor telepon sudah terdaftar');
-        }
-
-        const adminUser = fbAuth.currentUser;
-
-        const response = await createUserWithEmailAndPassword(fbAuth, data.email, data.password);
-
-        // Back To Admin After Register
-        if (adminUser) {
-          await fbAuth.updateCurrentUser(adminUser);
-        }
-
-        const { user } = response;
-
-        const docId = uuidv4();
-
-        await setDoc(doc(fbFirestore, 'users', docId), {
-          id: docId,
-          authId: user.uid,
-          ...dataFirestore,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
+          created_at: now,
+          updated_at: now,
         });
+
+        if (insertError) {
+          console.error('Failed to insert user into Supabase:', insertError);
+        }
       } catch (error: any) {
         throw safeWrapError(error);
       } finally {
@@ -261,7 +394,7 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
     [update]
   );
 
-  // UPDATE (Only Firestore)
+  // UPDATE
   const onUpdate = useCallback(
     async (id: string, payload: Partial<Omit<UserInterface, 'id' | 'createdAt' | 'updatedAt'>>): Promise<UserInterface | null> => {
       if (!id) return null;
@@ -269,49 +402,41 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
       try {
         update('isLoading', true);
 
-        const sanitizedPayload = { ...payload };
+        const sanitizedPayload: Record<string, any> = { ...payload };
 
         if (typeof sanitizedPayload.email === 'string') {
           sanitizedPayload.email = sanitizedPayload.email.trim();
         }
 
         if (typeof sanitizedPayload.phoneNumber === 'string') {
-          sanitizedPayload.phoneNumber = sanitizedPayload.phoneNumber.trim();
+          sanitizedPayload.phone_number = sanitizedPayload.phoneNumber.trim();
+          delete sanitizedPayload.phoneNumber;
         }
 
-        const usersCollectionRef = collection(fbFirestore, 'users');
-
-        if (sanitizedPayload.email) {
-          const duplicateEmailQuery = query(usersCollectionRef, where('email', '==', sanitizedPayload.email), fbLimit(2));
-          const duplicateEmailSnapshot = await getDocs(duplicateEmailQuery);
-          const duplicateEmailExists = duplicateEmailSnapshot.docs.some((snapshotDoc) => snapshotDoc.id !== id);
-
-          if (duplicateEmailExists) {
-            throw new Error('Email sudah terdaftar');
-          }
+        if (typeof sanitizedPayload.nameLowercase === 'string') {
+          sanitizedPayload.name_lowercase = sanitizedPayload.nameLowercase;
+          delete sanitizedPayload.nameLowercase;
         }
 
-        if (sanitizedPayload.phoneNumber) {
-          const duplicatePhoneQuery = query(usersCollectionRef, where('phoneNumber', '==', sanitizedPayload.phoneNumber), fbLimit(2));
-          const duplicatePhoneSnapshot = await getDocs(duplicatePhoneQuery);
-          const duplicatePhoneExists = duplicatePhoneSnapshot.docs.some((snapshotDoc) => snapshotDoc.id !== id);
+        sanitizedPayload.updated_at = new Date().toISOString();
 
-          if (duplicatePhoneExists) {
-            throw new Error('Nomor telepon sudah terdaftar');
-          }
+        // Update in Supabase
+        const { data, error } = await supabase
+          .from('users')
+          .update(sanitizedPayload)
+          .eq('id', id)
+          .select()
+          .single();
+
+        if (error) {
+          // Fallback to Firestore update
+          const docRef = doc(fbFirestore, 'users', id);
+          await updateDoc(docRef, { ...payload, updatedAt: new Date() });
+          const snap = await getDoc(docRef);
+          return snap.exists() ? mapUser(snap.data()) : null;
         }
 
-        const docRef = doc(fbFirestore, 'users', id);
-        await updateDoc(docRef, {
-          ...sanitizedPayload,
-          updatedAt: serverTimestamp(),
-        });
-
-        const snap = await getDoc(docRef);
-        if (!snap.exists()) return null;
-
-        const updated = mapUser(snap.data());
-        return updated;
+        return data ? mapUser(data) : null;
       } catch (err) {
         throw safeWrapError(err);
       } finally {
@@ -329,28 +454,23 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
       try {
         update('isLoading', true);
 
-        const docRef = doc(fbFirestore, 'users', id);
-        const snap = await getDoc(docRef);
-        if (!snap.exists()) {
-          throw new Error('User not found in Firestore');
-        }
+        // Delete from Supabase
+        await supabase.from('users').delete().eq('id', id);
 
-        const current = fbAuth.currentUser;
-
-        if (current && current.uid === authId) {
-          await deleteAuthUser(current);
-          sessionStorage.removeItem(ACCESS_TOKEN_KEY);
-          update('user', '');
-        } else {
-          const functions = getFunctions(undefined, 'asia-southeast1');
-          const adminDelete = httpsCallable(functions, 'adminDeleteUser');
-          await adminDelete({ uid: authId, docId: id });
-        }
-
-        const remainingUser = await getDoc(docRef);
-        if (remainingUser.exists()) {
-          await deleteDoc(docRef);
-        }
+        // Delete from Firebase
+        try {
+          const current = fbAuth.currentUser;
+          if (current && current.uid === authId) {
+            await deleteAuthUser(current);
+            sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+            update('user', '');
+          } else {
+            const functions = getFunctions(undefined, 'asia-southeast1');
+            const adminDelete = httpsCallable(functions, 'adminDeleteUser');
+            await adminDelete({ uid: authId, docId: id });
+          }
+          await deleteDoc(doc(fbFirestore, 'users', id));
+        } catch {}
       } catch (err) {
         throw safeWrapError(err);
       } finally {
@@ -364,19 +484,13 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
   const onLogout = useCallback(async () => {
     try {
       update('isLoading', true);
-
-      await signOut(fbAuth);
-
-      sessionStorage.removeItem(ACCESS_TOKEN_KEY);
-
-      update('user', '');
-      update('status', 'unauthenticated');
+      await cleanupAuthSession();
     } catch (error: any) {
       throw safeWrapError(error);
     } finally {
       update('isLoading', false);
     }
-  }, [update]);
+  }, [cleanupAuthSession, update]);
 
   // RESET STATE
   const onReset = useCallback(() => {

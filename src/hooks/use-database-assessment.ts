@@ -1,25 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  orderBy,
-  getDocs,
-  limit as fbLimit,
-  startAfter,
-  QueryDocumentSnapshot,
-  Timestamp,
-  updateDoc,
-  serverTimestamp,
-  getDoc,
-  deleteDoc,
-  doc,
-  setDoc,
-} from 'firebase/firestore';
 import { v4 as uuidv4 } from 'uuid';
-// firebase
-import { fbFirestore } from '/src/firebase';
+// supabase
+import { supabase } from '/src/lib/supabase';
 // interfaces
 import { AssessmentInterface, AssessmentsParamsInterface, PayloadCreateAssessmentInterface } from '/src/interfaces/assessment';
 
@@ -28,30 +10,19 @@ import { AssessmentInterface, AssessmentsParamsInterface, PayloadCreateAssessmen
 export interface UseDatabaseAssessmentInterface {
   assessmentsList: AssessmentInterface[];
   isLoading: boolean;
-  // pagination meta
   page: number;
   perPage: number;
   maxPages: number;
   hasNext: boolean;
   hasPrev: boolean;
-  // controls
   assessments: (params?: AssessmentsParamsInterface) => void;
   nextPage: () => void;
   prevPage: () => void;
   resetPagination: () => void;
-  // helpers
-  getAssessmentById: (id: string) => AssessmentInterface | null; // local
-  fetchAssessmentById: (id: string) => Promise<AssessmentInterface | null>; // cloud
-  // raw
-  allAssessmentsCache: AssessmentInterface[]; // optional cache maintained by a background listener (kept small cost)
-  //
-  createAssessment: (payload: PayloadCreateAssessmentInterface) => Promise<{
-    formId: string;
-    studenId: string;
-    userId: string;
-    score: number;
-    id: string;
-  }>;
+  getAssessmentById: (id: string) => AssessmentInterface | null;
+  fetchAssessmentById: (id: string) => Promise<AssessmentInterface | null>;
+  allAssessmentsCache: AssessmentInterface[];
+  createAssessment: (payload: PayloadCreateAssessmentInterface) => Promise<{ formId: string; studenId: string; userId: string; score: number; id: string }>;
   updateAssessment: (id: string, payload: Partial<Omit<AssessmentInterface, 'id' | 'createdAt' | 'updatedAt'>>) => Promise<AssessmentInterface | null>;
   deleteAssessment: (id: string) => Promise<boolean>;
 }
@@ -60,158 +31,95 @@ export interface UseDatabaseAssessmentInterface {
 
 const mapAssessment = (data: any): AssessmentInterface => ({
   id: data.id,
-  formId: data.formId,
-  studenId: data.studenId,
-  studentClass: data.studentClass,
+  formId: data.form_id ?? data.formId,
+  studenId: data.student_id ?? data.studenId,
+  studentClass: data.student_class ?? data.studentClass,
   catatan: data.catatan,
-  userId: data.userId,
+  userId: data.user_id ?? data.userId,
   score: data.score,
-  createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : new Date(data.createdAt),
-  updatedAt: data.updatedAt instanceof Timestamp ? data.updatedAt.toDate() : new Date(data.updatedAt),
+  createdAt: new Date(data.created_at ?? data.createdAt),
+  updatedAt: new Date(data.updated_at ?? data.updatedAt),
 });
 
 // ----------------------------------------------------------------------
 
 export const useDatabaseAssessment = (): UseDatabaseAssessmentInterface => {
   const [allAssessmentsCache, setAllAssessmentsCache] = useState<AssessmentInterface[]>([]);
-
   const [assessmentsList, setAssessmentsList] = useState<AssessmentInterface[]>([]);
-
   const [isLoading, setIsLoading] = useState<boolean>(false);
-
   const [page, setPage] = useState<number>(1);
 
   const perPageRef = useRef<number>(5);
-
   const limitRef = useRef<number>(50);
-
-  const cursorsRef = useRef<QueryDocumentSnapshot<any>[] | null[]>([null]);
-
-  const lastVisibleRef = useRef<QueryDocumentSnapshot<any> | null>(null);
-
   const paramsRef = useRef<AssessmentsParamsInterface>({ formId: '', userId: '', studentId: '', limit: 50, perPage: 5 });
-
-  const unsubscribeRef = useRef<(() => void) | null>(null);
 
   // ALL ASSESSMENTS CACHE
   useEffect(() => {
-    const q = query(collection(fbFirestore, 'assessments'), orderBy('createdAt'));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const arr: AssessmentInterface[] = [];
-        snap.forEach((d) => arr.push(mapAssessment({ id: d.id, ...d.data() })));
-        setAllAssessmentsCache(arr);
-      },
-      (err) => {
-        console.error('allAssessmentsCache snapshot error', err);
-        setAllAssessmentsCache([]);
-      }
-    );
+    let cancelled = false;
+
+    const fetchAll = async () => {
+      const { data } = await supabase.from('assessments').select('*').order('created_at', { ascending: true });
+      if (!cancelled && data) setAllAssessmentsCache(data.map(mapAssessment));
+    };
+
+    fetchAll();
+
+    const channel = supabase
+      .channel(`assessments-cache-${uuidv4()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'assessments' }, () => fetchAll())
+      .subscribe();
 
     return () => {
-      unsub();
+      cancelled = true;
+      supabase.removeChannel(channel);
       setAllAssessmentsCache([]);
     };
   }, []);
 
-  const buildQueryForPage = useCallback((pageIndex: number) => {
-    const { formId, userId, studentId } = paramsRef.current;
-    const pageSize = perPageRef.current;
+  const subscribePage = useCallback(async (pageIndex: number) => {
+    const perPage = perPageRef.current;
+    const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPage));
+    if (pageIndex < 1 || pageIndex > max) return;
 
-    const collectionRef = collection(fbFirestore, 'assessments');
-    const qParts: any[] = [];
+    setIsLoading(true);
+    try {
+      const { formId, userId, studentId } = paramsRef.current;
+      const from = (pageIndex - 1) * perPage;
+      const to = from + perPage - 1;
 
-    if (formId) qParts.push(where('formId', '==', formId));
-    if (userId) qParts.push(where('userId', '==', userId));
-    if (studentId) qParts.push(where('studentId', '==', studentId));
+      let q = supabase.from('assessments').select('*').order('created_at', { ascending: false });
+      if (formId) q = q.eq('form_id', formId);
+      if (userId) q = q.eq('user_id', userId);
+      if (studentId) q = q.eq('student_id', studentId);
+      q = q.range(from, to);
 
-    qParts.push(orderBy('createdAt', 'desc'));
-
-    if (pageIndex > 1) {
-      const cursor = cursorsRef.current[pageIndex - 1] ?? null;
-      if (cursor) {
-        qParts.push(startAfter(cursor));
-      }
+      const { data } = await q;
+      setAssessmentsList((data ?? []).map(mapAssessment));
+    } finally {
+      setIsLoading(false);
     }
-
-    qParts.push(fbLimit(pageSize));
-
-    return query(collectionRef, ...qParts);
+    setPage(pageIndex);
   }, []);
-
-  const subscribePage = useCallback(
-    (pageIndex: number) => {
-      const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-      if (pageIndex < 1 || pageIndex > max) return;
-
-      // cleanup previous subscription
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-
-      setIsLoading(true);
-
-      const q = buildQueryForPage(pageIndex);
-
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          console.info('[paginate snapshot] page', pageIndex, 'size', snap.size);
-          const list: AssessmentInterface[] = [];
-          snap.forEach((d) => {
-            list.push(mapAssessment({ id: d.id, ...d.data() }));
-          });
-
-          setAssessmentsList(list);
-          setIsLoading(false);
-
-          const last = snap.docs[snap.docs.length - 1] ?? null;
-          lastVisibleRef.current = last || null;
-          cursorsRef.current[pageIndex] = last || null;
-        },
-        (err) => {
-          console.error('paginate snapshot error', err.code, err.message);
-          setIsLoading(false);
-        }
-      );
-
-      unsubscribeRef.current = unsub;
-      setPage(pageIndex);
-    },
-    [buildQueryForPage]
-  );
 
   const assessments = useCallback(
     (params?: AssessmentsParamsInterface) => {
-      const formId = params?.formId ?? '';
-      const userId = params?.userId ?? '';
-      const studentId = params?.studentId ?? '';
-      const limit = params?.limit ?? 50;
-      const perPage = params?.perPage ?? 5;
-
-      paramsRef.current = { formId, userId, studentId, limit, perPage };
-      limitRef.current = limit;
-      perPageRef.current = perPage;
-
-      cursorsRef.current = [null];
-      lastVisibleRef.current = null;
-
+      paramsRef.current = {
+        formId: params?.formId ?? '',
+        userId: params?.userId ?? '',
+        studentId: params?.studentId ?? '',
+        limit: params?.limit ?? 50,
+        perPage: params?.perPage ?? 5,
+      };
+      limitRef.current = params?.limit ?? 50;
+      perPageRef.current = params?.perPage ?? 5;
       subscribePage(1);
     },
     [subscribePage]
   );
 
   const nextPage = useCallback(() => {
-    const max = Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-    if (page >= max) return;
-    const cursorForNext = cursorsRef.current[page];
-    if (!cursorForNext) {
-      subscribePage(page + 1);
-    } else {
-      subscribePage(page + 1);
-    }
+    if (page >= Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current))) return;
+    subscribePage(page + 1);
   }, [page, subscribePage]);
 
   const prevPage = useCallback(() => {
@@ -220,19 +128,11 @@ export const useDatabaseAssessment = (): UseDatabaseAssessmentInterface => {
   }, [page, subscribePage]);
 
   const resetPagination = useCallback(() => {
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current();
-      unsubscribeRef.current = null;
-    }
-
-    cursorsRef.current = [null];
-    lastVisibleRef.current = null;
     setAssessmentsList([]);
     setPage(1);
     setIsLoading(false);
   }, []);
 
-  // LOCAL GETTER
   const getAssessmentById = useCallback(
     (id: string): AssessmentInterface | null => {
       if (!id) return null;
@@ -244,104 +144,80 @@ export const useDatabaseAssessment = (): UseDatabaseAssessmentInterface => {
   const fetchAssessmentById = useCallback(async (id: string): Promise<AssessmentInterface | null> => {
     if (!id) return null;
     try {
-      const q = query(collection(fbFirestore, 'assessments'), where('id', '==', id), fbLimit(1));
-      const snap = await getDocs(q);
-      if (snap.empty) return null;
-      const docSnap = snap.docs[0];
-      return mapAssessment({ id: docSnap.id, ...docSnap.data() });
-    } catch (err) {
-      console.error('fetchAssessmentById error', err);
+      const { data } = await supabase.from('assessments').select('*').eq('id', id).limit(1).single();
+      return data ? mapAssessment(data) : null;
+    } catch {
       return null;
     }
   }, []);
 
   const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
-  // CRAETE ASSESSMENTS
   const createAssessment = useCallback(async (payload: PayloadCreateAssessmentInterface) => {
     try {
       const docId = uuidv4();
+      const now = new Date().toISOString();
       const catatan = typeof payload.catatan === 'string' ? payload.catatan.trim() : '';
 
-      await setDoc(doc(fbFirestore, 'assessments', docId), {
+      const { error } = await supabase.from('assessments').insert({
         id: docId,
-        ...payload,
+        form_id: payload.formId,
+        student_id: payload.studenId,
+        user_id: payload.userId,
+        student_class: payload.studentClass ?? '',
         catatan,
-        studentClass: payload.studentClass ?? '',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        score: payload.score,
+        created_at: now,
+        updated_at: now,
       });
 
-      return {
-        id: docId,
-        ...payload,
-        catatan,
-      };
+      if (error) throw new Error(error.message);
+      return { id: docId, ...payload, catatan };
     } catch (error) {
       throw safeWrapError(error);
     }
   }, []);
 
-  // UPDATE ASSESSMENTS
   const updateAssessment = useCallback(
     async (id: string, payload: Partial<Omit<AssessmentInterface, 'id' | 'createdAt' | 'updatedAt'>>): Promise<AssessmentInterface | null> => {
       if (!id) return null;
-
       try {
-        const docRef = doc(fbFirestore, 'assessments', id);
-        await updateDoc(docRef, {
-          ...payload,
-          updatedAt: serverTimestamp(),
-        });
+        const updateData: Record<string, any> = { updated_at: new Date().toISOString() };
+        if (payload.formId !== undefined) updateData.form_id = payload.formId;
+        if (payload.studenId !== undefined) updateData.student_id = payload.studenId;
+        if (payload.userId !== undefined) updateData.user_id = payload.userId;
+        if (payload.studentClass !== undefined) updateData.student_class = payload.studentClass;
+        if (payload.catatan !== undefined) updateData.catatan = payload.catatan;
+        if (payload.score !== undefined) updateData.score = payload.score;
 
-        const snap = await getDoc(docRef);
-        if (!snap.exists()) return null;
+        const { data, error } = await supabase.from('assessments').update(updateData).eq('id', id).select().single();
+        if (error) throw new Error(error.message);
 
-        const updated = mapAssessment(snap.data());
-
+        const updated = mapAssessment(data);
         setAllAssessmentsCache((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
         setAssessmentsList((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
-
         return updated;
       } catch (err) {
         throw safeWrapError(err);
       }
     },
-    [setAllAssessmentsCache, setAssessmentsList]
+    []
   );
 
-  // DELETE ASSESSMENTS
-  const deleteAssessment = useCallback(
-    async (id: string): Promise<boolean> => {
-      if (!id) return false;
-
-      try {
-        const docRef = doc(fbFirestore, 'assessments', id);
-        await deleteDoc(docRef);
-
-        setAllAssessmentsCache((prev) => prev.filter((u) => u.id !== id));
-        setAssessmentsList((prev) => prev.filter((u) => u.id !== id));
-
-        return true;
-      } catch (err) {
-        throw safeWrapError(err);
-      }
-    },
-    [setAllAssessmentsCache, setAssessmentsList]
-  );
-
-  // CLEANUP ON UNMONT
-  useEffect(() => {
-    return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
-      }
-    };
+  const deleteAssessment = useCallback(async (id: string): Promise<boolean> => {
+    if (!id) return false;
+    try {
+      const { error } = await supabase.from('assessments').delete().eq('id', id);
+      if (error) throw new Error(error.message);
+      setAllAssessmentsCache((prev) => prev.filter((u) => u.id !== id));
+      setAssessmentsList((prev) => prev.filter((u) => u.id !== id));
+      return true;
+    } catch (err) {
+      throw safeWrapError(err);
+    }
   }, []);
 
   const hasNext = page < Math.max(1, Math.ceil((limitRef.current || 50) / perPageRef.current));
-
   const hasPrev = page > 1;
 
   return {
