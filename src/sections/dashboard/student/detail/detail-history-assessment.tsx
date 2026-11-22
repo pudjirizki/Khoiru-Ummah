@@ -61,7 +61,9 @@ const DetailHistoryAssessment: React.FC<DetailHistoryAssessmentProps> = ({ stude
     if (!student?.id) return [];
 
     const formMap = new Map<string, FinalFormInterface>((forms ?? []).map((form) => [form.id, form]));
-    const studentAssessments = assessments.filter((assessment) => assessment.studenId === student.id);
+    const studentAssessments = assessments.filter(
+      (assessment) => assessment.studenId === student.id && ['teacher', 'parent'].includes(userMap.get(assessment.userId)?.role ?? '')
+    );
 
     const groupedAssessments = studentAssessments.reduce<Map<string, FinalAssessmentInterface[]>>((acc, assessment) => {
       const current = acc.get(assessment.formId) ?? [];

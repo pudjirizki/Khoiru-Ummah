@@ -103,13 +103,22 @@ const DetailChartAssessment: React.FC<DetailChartAssessmentProps> = ({
 
   const userMap = useMemo(() => new Map<string, UserInterface>((users ?? []).map((u) => [u.id, u])), [users]);
 
+  const assessorAssessments = useMemo(
+    () =>
+      (formAssessments ?? []).filter((assessment) => {
+        const role = userMap.get(assessment.userId)?.role;
+        return role === 'teacher' || role === 'parent';
+      }),
+    [formAssessments, userMap]
+  );
+
   const finalScore = useMemo(() => {
     let teacherScore = 0;
     let parentScore = 0;
 
     const getUser = (id: string) => userMap.get(id);
 
-    formAssessments?.forEach((f) => {
+    assessorAssessments.forEach((f) => {
       const user = getUser(f.userId);
       if (!user) return;
 
@@ -121,7 +130,10 @@ const DetailChartAssessment: React.FC<DetailChartAssessmentProps> = ({
     });
 
     return calculateFinalScore(teacherScore, parentScore);
-  }, [formAssessments, userMap]);
+  }, [assessorAssessments, userMap]);
+
+  const hasTeacherAssessment = assessorAssessments.some((assessment) => userMap.get(assessment.userId)?.role === 'teacher');
+  const hasParentAssessment = assessorAssessments.some((assessment) => userMap.get(assessment.userId)?.role === 'parent');
 
   const isAwaitingAssessment = useMemo(() => {
     const dbUser = currentUser?.databaseUsers;
@@ -130,7 +142,7 @@ const DetailChartAssessment: React.FC<DetailChartAssessmentProps> = ({
     const getUser = (id: string) => userMap.get(id);
 
     if (dbUser.role === 'teacher') {
-      const hasTeacherAssessment = formAssessments?.some((f) => {
+      const hasTeacherAssessment = assessorAssessments.some((f) => {
         const user = getUser(f.userId);
         return !!user && user.role === 'teacher';
       });
@@ -138,13 +150,13 @@ const DetailChartAssessment: React.FC<DetailChartAssessmentProps> = ({
       return !hasTeacherAssessment;
     }
 
-    const assessedUserIds = new Set(formAssessments?.map((a) => a.userId));
+    const assessedUserIds = new Set(assessorAssessments.map((a) => a.userId));
     return !assessedUserIds.has(dbUser.id);
-  }, [currentUser?.databaseUsers, formAssessments, userMap]);
+  }, [assessorAssessments, currentUser?.databaseUsers, userMap]);
 
   // SERIES, LABELS
   useEffect(() => {
-    if (!formAssessments || formAssessments?.length === 0) {
+    if (assessorAssessments.length === 0) {
       setSeries([]);
       setLabels([]);
       return;
@@ -152,7 +164,7 @@ const DetailChartAssessment: React.FC<DetailChartAssessmentProps> = ({
 
     const criteriaMap = new Map<string, CriteriaInterface>((allCriteriasCache ?? []).map((c) => [c.id, c]));
 
-    const presentCriteriaIds = Array.from(new Set(formAssessments?.flatMap((asmt) => asmt.answers.map((ans) => ans.criteriaId))));
+    const presentCriteriaIds = Array.from(new Set(assessorAssessments.flatMap((asmt) => asmt.answers.map((ans) => ans.criteriaId))));
 
     const criteriaWithMeta = presentCriteriaIds.map((id) => {
       const meta = criteriaMap.get(id);
@@ -179,14 +191,9 @@ const DetailChartAssessment: React.FC<DetailChartAssessmentProps> = ({
       descriptions: c.description,
     }));
 
-    const newSeries: SeriesInterface[] = formAssessments?.map((asmt, idx) => {
+    const newSeries: SeriesInterface[] = assessorAssessments.map((asmt, idx) => {
       const user = userMap.get(asmt.userId);
-
-      let roleLabel = '';
-      if (user?.role === 'teacher') roleLabel = 'Guru';
-      else if (user?.role === 'parent') roleLabel = 'Wali Siswa';
-      else if (user?.role === 'admin') roleLabel = 'Admin';
-      else roleLabel = user?.name ?? 'Unknown';
+      const roleLabel = user?.role === 'teacher' ? 'Guru' : 'Wali Siswa';
 
       const ansMap = new Map<string, AnswerInterface>(asmt.answers.map((a) => [a.criteriaId, a]));
 
@@ -204,7 +211,7 @@ const DetailChartAssessment: React.FC<DetailChartAssessmentProps> = ({
 
     setLabels(newLabels);
     setSeries(newSeries);
-  }, [formAssessments, users, allCriteriasCache, userMap]);
+  }, [assessorAssessments, allCriteriasCache, userMap]);
 
   const getUser = (id: string) => userMap.get(id);
 
@@ -229,7 +236,7 @@ const DetailChartAssessment: React.FC<DetailChartAssessmentProps> = ({
 
             <div className="flex flex-col items-end gap-3">
               <div className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm">
-                {formAssessments?.length ?? 0} Penilaian
+                {assessorAssessments.length} Penilaian
               </div>
 
               <RenderExport
@@ -246,7 +253,7 @@ const DetailChartAssessment: React.FC<DetailChartAssessmentProps> = ({
       </div>
 
       <div className="space-y-6 p-4 sm:p-6">
-        {!formAssessments?.length ? (
+        {!assessorAssessments.length ? (
           <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-5 py-10 text-center">
             <p className="text-base font-semibold text-slate-700">Belum ada penilaian</p>
             <p className="mt-1 text-sm text-slate-500">Data penilaian akan muncul setelah formulir diisi.</p>
@@ -254,9 +261,9 @@ const DetailChartAssessment: React.FC<DetailChartAssessmentProps> = ({
         ) : (
           <>
             <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-              {formAssessments?.map((f, i) => <RenderScoreCard key={i} bgColor={series[i]?.color} role={getUser(f.userId)?.role} name={getUser(f.userId)?.name} score={f.score} />)}
+              {assessorAssessments.map((f, i) => <RenderScoreCard key={f.id} bgColor={series[i]?.color} role={getUser(f.userId)?.role} name={getUser(f.userId)?.name} score={f.score} />)}
 
-              {series.length >= 2 && <RenderScoreCard name="Sistem" score={finalScore} />}
+              {hasTeacherAssessment && hasParentAssessment && <RenderScoreCard name="Sistem" score={finalScore} />}
             </div>
 
             {/* NOTES */}
@@ -267,14 +274,14 @@ const DetailChartAssessment: React.FC<DetailChartAssessmentProps> = ({
               </div>
 
               <div className="grid gap-4 lg:grid-cols-2">
-                {formAssessments?.map((f, i) => {
+                {assessorAssessments.map((f, i) => {
                   const role = getUser(f.userId)?.role;
                   const name = getUser(f.userId)?.name;
 
-                  const roleLabel = role === 'teacher' ? 'Guru' : role === 'parent' ? 'Wali Siswa' : 'Admin';
+                  const roleLabel = role === 'teacher' ? 'Guru' : 'Wali Siswa';
 
                   return (
-                    <div key={i} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <div key={f.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                       <div className="mb-3 flex items-center justify-between">
                         <div>
                           <p className="font-semibold text-slate-900">{roleLabel}</p>

@@ -337,6 +337,11 @@ const InputForm: React.FC<InputFormProps> = ({ students, assessments, users, cur
       try {
         if (!currentForm || !currentUser.databaseUsers) return;
 
+        if (currentUser.databaseUsers.role !== 'teacher' && currentUser.databaseUsers.role !== 'parent') {
+          enqueueSnackbar('Akun admin hanya digunakan untuk mengelola data. Penilaian siswa dilakukan oleh guru dan wali siswa.', { variant: 'error' });
+          return;
+        }
+
         if (isSelectedStudentSubmitted) {
           enqueueSnackbar('Form sudah diisi', { variant: 'error' });
           return;

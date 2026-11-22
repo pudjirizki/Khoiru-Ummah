@@ -4,6 +4,7 @@ import { supabase } from '/src/supabase';
 // interfaces
 import { TeacherAttendanceInterface, TeacherAttendanceStatus } from '/src/interfaces/attendance';
 import { UserInterface } from '/src/interfaces/user';
+import { toError } from '/src/utils/to-error';
 
 interface UseDatabaseAttendanceInterface {
   attendance: TeacherAttendanceInterface | null;
@@ -20,7 +21,7 @@ const mapAttendance = (data: any): TeacherAttendanceInterface => ({
   teacherId: data.teacher_id ?? data.teacherId,
   teacherName: data.teacher_name ?? data.teacherName,
   date: data.date,
-  status: data.status,
+  status: data.status === 'Hadir' || data.status === 'present' ? 'present' : 'absent',
   note: data.note ?? '',
   isVerified: data.is_verified ?? data.isVerified ?? false,
   verifiedBy: data.verified_by ?? data.verifiedBy ?? null,
@@ -50,7 +51,7 @@ export const useDatabaseAttendance = (teacher: UserInterface | null, date: strin
       try {
         const attendanceId = getAttendanceId(teacherId, date);
         const { data, error: loadErr } = await supabase
-          .from('teacher_attendances')
+          .from('teacher_attendance')
           .select('*')
           .eq('id', attendanceId)
           .maybeSingle();
@@ -62,7 +63,7 @@ export const useDatabaseAttendance = (teacher: UserInterface | null, date: strin
         }
       } catch (loadError) {
         console.error('Failed to load teacher attendance', loadError);
-        if (isCurrent) setError('Absensi belum dapat dimuat. Silakan muat ulang halaman.');
+        if (isCurrent) setError(`Absensi belum dapat dimuat: ${toError(loadError).message}`);
       } finally {
         if (isCurrent) setIsLoading(false);
       }
@@ -83,28 +84,29 @@ export const useDatabaseAttendance = (teacher: UserInterface | null, date: strin
       setIsSaving(true);
       try {
         const id = getAttendanceId(teacherId, date);
+        const updatedAt = new Date().toISOString();
         const payload = {
           id,
           teacher_id: teacherId,
           teacher_name: teacher.name,
           date,
-          status,
+          status: status === 'present' ? 'Hadir' : 'Tidak hadir',
           note: status === 'absent' ? note.trim() : '',
+          checked_in_at: status === 'present' ? updatedAt : null,
+          updated_at: updatedAt,
+          updated_by: teacherId,
+          updated_by_name: teacher.name,
           is_verified: false,
           verified_by: null,
           verified_by_name: null,
           verified_at: null,
         };
 
-        const { data, error: upsertErr } = await supabase
-          .from('teacher_attendances')
-          .upsert(payload, { onConflict: 'id' })
-          .select()
-          .single();
+        const { error: upsertErr } = await supabase.from('teacher_attendance').upsert(payload, { onConflict: 'id' });
 
         if (upsertErr) throw upsertErr;
 
-        setAttendance(data ? mapAttendance(data) : {
+        setAttendance({
           id,
           teacherId,
           teacherName: teacher.name,
@@ -116,6 +118,8 @@ export const useDatabaseAttendance = (teacher: UserInterface | null, date: strin
           verifiedByName: null,
           verifiedAt: null,
         });
+      } catch (saveError) {
+        throw toError(saveError);
       } finally {
         setIsSaving(false);
       }

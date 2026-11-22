@@ -2,6 +2,18 @@
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
+## Local development
+
+Install dependencies with `npm install`, then start the app and its API server together:
+
+```sh
+npm run dev
+```
+
+Set the Supabase URL and publishable key using either the `VITE_` or `NEXT_PUBLIC_` variable names. User-management API routes also require `SUPABASE_SERVICE_ROLE_KEY` on the server; never expose that key to the browser.
+
+Use `npm run dev:client` only when you do not need the local API routes.
+
 Currently, two official plugins are available:
 
 - [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh

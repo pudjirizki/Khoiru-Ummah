@@ -134,7 +134,8 @@ const AdminAttendanceView: React.FC = () => {
   const handleSave = async (attendanceId: string, status: TeacherAttendanceStatus, note: string): Promise<boolean> => {
     setBusyAttendanceId(attendanceId);
     try {
-      await updateAttendance(attendanceId, status, note);
+      if (!admin) throw new Error('Data admin tidak ditemukan.');
+      await updateAttendance(attendanceId, status, note, admin.id, admin.name);
       enqueueSnackbar('Perubahan tersimpan. Absensi menunggu verifikasi kembali.');
       return true;
     } catch (saveError) {

@@ -73,12 +73,17 @@ const FormDetailView: React.FC<FormDetailViewProps> = ({ slug }) => {
   // GET CURRENT FORM
   useEffect(() => {
     const fetch = async () => {
-      const res = await fetchFinalFormById(slug);
+      try {
+        const res = await fetchFinalFormById(slug);
 
-      setCurrentForm(res);
+        setCurrentForm(res);
+      } catch (error) {
+        console.error('fetchFinalFormById error:', error);
+        setCurrentForm(null);
+      }
     };
 
-    fetch();
+    void fetch();
   }, [fetchFinalFormById, slug]);
 
   const getQuestionDistribution = (formId: string) => {

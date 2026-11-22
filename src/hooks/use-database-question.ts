@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 // supabase
 import { supabase } from '/src/supabase';
+import { subscribeToTableChanges } from '/src/supabase/realtime';
 // interfaces
 import { QuestionInterface, PayloadCreateQuestionInterface, QuestionsParamsInterface } from '/src/interfaces/question';
 
@@ -64,7 +65,7 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
         const { data, error } = await supabase
           .from('questions')
           .select('*')
-          .order('order_num', { ascending: true });
+          .order('order', { ascending: true });
 
         if (error) {
           console.error('allQuestionsCache fetch error', error);
@@ -81,16 +82,11 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
 
     fetchAll();
 
-    const channel = supabase
-      .channel('questions-cache')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'questions' }, () => {
-        fetchAll();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTableChanges('questions', fetchAll);
 
     return () => {
       isMounted = false;
-      supabase.removeChannel(channel);
+      unsubscribe();
       setAllQuestionsCache([]);
     };
   }, []);
@@ -117,7 +113,7 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
         }
 
         queryBuilder = queryBuilder
-          .order('order_num', { ascending: true })
+          .order('order', { ascending: true })
           .range(from, to);
 
         const { data, count, error } = await queryBuilder;
@@ -208,7 +204,7 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
         .from('questions')
         .insert({
           criteria_id: payload.criteriaId,
-          order_num: payload.order,
+          order: payload.order,
           text: payload.text,
         })
         .select()
@@ -235,7 +231,7 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
       try {
         const updateData: Record<string, any> = {};
         if (payload.criteriaId !== undefined) updateData['criteria_id'] = payload.criteriaId;
-        if (payload.order !== undefined) updateData['order_num'] = payload.order;
+        if (payload.order !== undefined) updateData['order'] = payload.order;
         if (payload.text !== undefined) updateData['text'] = payload.text;
 
         const { data, error } = await supabase

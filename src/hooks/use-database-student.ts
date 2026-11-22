@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 // supabase
 import { supabase } from '/src/supabase';
+import { subscribeToTableChanges } from '/src/supabase/realtime';
 // interfaces
 import { PayloadCreateStudentInterface, StudentInterface, StudentsParamsInterface } from '/src/interfaces/student';
 
@@ -93,16 +94,11 @@ export const useDatabaseStudent = (): UseDatabaseStudentInterface => {
 
     fetchAll();
 
-    const channel = supabase
-      .channel('students-cache')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'students' }, () => {
-        fetchAll();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTableChanges('students', fetchAll);
 
     return () => {
       isMounted = false;
-      supabase.removeChannel(channel);
+      unsubscribe();
       setAllStudentsCache([]);
     };
   }, []);
@@ -172,12 +168,12 @@ export const useDatabaseStudent = (): UseDatabaseStudentInterface => {
 
         if (search) {
           const keyword = search.toLowerCase().trim();
-          q = q.ilike('name', `%${keyword}`);
+          q = q.ilike('name', `%${keyword}%`);
         }
 
         q = q.order('created_at', { ascending: false }).range(from, to);
 
-        const { data, error } = await q;
+        const { data, count, error } = await q;
 
         if (error) {
           console.error('paginate fetch error', error.message);
@@ -187,6 +183,7 @@ export const useDatabaseStudent = (): UseDatabaseStudentInterface => {
 
         console.info('[paginate fetch] page', pageIndex, 'size', (data ?? []).length);
         setStudentsList((data ?? []).map(mapStudent));
+        if (count !== null) setTotalCount(count);
         setIsLoading(false);
         setPage(pageIndex);
       } catch (err) {

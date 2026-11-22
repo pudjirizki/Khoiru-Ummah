@@ -118,7 +118,7 @@ const FormList: React.FC<FormListProps> = ({ forms, assessments, currentUser, us
     <div className="mt-6 grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-2">
       {forms?.map((form, i) => {
         const isFilled = checkAssessment(form.id);
-        const canFill = teacherRole || parentRole || adminRole;
+        const canFill = teacherRole || parentRole;
 
         return (
           <div

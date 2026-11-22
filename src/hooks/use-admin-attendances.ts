@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 // supabase
 import { supabase } from '/src/supabase';
+import { subscribeToTableChanges } from '/src/supabase/realtime';
 // interfaces
 import { TeacherAttendanceInterface, TeacherAttendanceStatus } from '/src/interfaces/attendance';
 
@@ -8,7 +9,7 @@ interface UseAdminAttendancesInterface {
   attendances: TeacherAttendanceInterface[];
   isLoading: boolean;
   error: string;
-  updateAttendance: (attendanceId: string, status: TeacherAttendanceStatus, note: string) => Promise<void>;
+  updateAttendance: (attendanceId: string, status: TeacherAttendanceStatus, note: string, adminId: string, adminName: string) => Promise<void>;
   verifyAttendance: (attendanceId: string, adminId: string, adminName: string) => Promise<void>;
 }
 
@@ -17,7 +18,7 @@ const mapAttendance = (data: any): TeacherAttendanceInterface => ({
   teacherId: data.teacher_id ?? data.teacherId,
   teacherName: data.teacher_name ?? data.teacherName,
   date: data.date,
-  status: data.status,
+  status: data.status === 'Hadir' || data.status === 'present' ? 'present' : 'absent',
   note: data.note ?? '',
   isVerified: data.is_verified ?? data.isVerified ?? false,
   verifiedBy: data.verified_by ?? data.verifiedBy ?? null,
@@ -33,7 +34,7 @@ export const useAdminAttendances = (date: string): UseAdminAttendancesInterface 
   const fetchAttendances = useCallback(async () => {
     try {
       const { data, error: fetchErr } = await supabase
-        .from('teacher_attendances')
+        .from('teacher_attendance')
         .select('*')
         .eq('date', date);
 
@@ -58,30 +59,26 @@ export const useAdminAttendances = (date: string): UseAdminAttendancesInterface 
 
     fetchAttendances();
 
-    const channel = supabase
-      .channel(`public:teacher_attendances_${date}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'teacher_attendances', filter: `date=eq.${date}` },
-        () => {
-          fetchAttendances();
-        }
-      )
-      .subscribe();
+    const unsubscribe = subscribeToTableChanges('teacher_attendance', fetchAttendances, `date=eq.${date}`);
 
     return () => {
-      supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [date, fetchAttendances]);
 
-  const updateAttendance = async (attendanceId: string, status: TeacherAttendanceStatus, note: string) => {
+  const updateAttendance = async (attendanceId: string, status: TeacherAttendanceStatus, note: string, adminId: string, adminName: string) => {
     if (status === 'absent' && !note.trim()) throw new Error('Catatan wajib diisi jika tidak hadir.');
 
+    const updatedAt = new Date().toISOString();
     const { error: updateErr } = await supabase
-      .from('teacher_attendances')
+      .from('teacher_attendance')
       .update({
-        status,
+        status: status === 'present' ? 'Hadir' : 'Tidak hadir',
         note: status === 'absent' ? note.trim() : '',
+        checked_in_at: status === 'present' ? updatedAt : null,
+        updated_at: updatedAt,
+        updated_by: adminId,
+        updated_by_name: adminName,
         is_verified: false,
         verified_by: null,
         verified_by_name: null,
@@ -112,12 +109,15 @@ export const useAdminAttendances = (date: string): UseAdminAttendancesInterface 
     const verifiedAt = new Date().toISOString();
 
     const { error: verifyErr } = await supabase
-      .from('teacher_attendances')
+      .from('teacher_attendance')
       .update({
         is_verified: true,
         verified_by: adminId,
         verified_by_name: adminName,
         verified_at: verifiedAt,
+        updated_at: verifiedAt,
+        updated_by: adminId,
+        updated_by_name: adminName,
       })
       .eq('id', attendanceId);
 

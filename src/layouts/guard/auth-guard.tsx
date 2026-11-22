@@ -4,6 +4,8 @@ import { paths } from '/src/routes/paths';
 import { useRouter } from '/src/routes/hooks';
 // context
 import { useUserContext } from '/src/context/user';
+// components
+import { LoadingScreen } from '/src/components/loading-screen';
 
 // ----------------------------------------------------------------------
 
@@ -41,8 +43,8 @@ const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
     check();
   }, [check]);
 
-  if (!checked) {
-    return <div />;
+  if (!checked || isLoading) {
+    return <LoadingScreen />;
   }
 
   return <>{children}</>;

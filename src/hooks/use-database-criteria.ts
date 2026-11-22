@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 // supabase
 import { supabase } from '/src/supabase';
+import { subscribeToTableChanges } from '/src/supabase/realtime';
 // interfaces
 import { CriteriaInterface, PayloadCreateCriteriaInterface, CriteriasParamsInterface } from '/src/interfaces/criteria';
 
@@ -94,16 +95,11 @@ export const useDatabaseCriteria = (): UseDatabaseCriteriaInterface => {
 
     fetchAll();
 
-    const channel = supabase
-      .channel('criterias-cache')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'criterias' }, () => {
-        fetchAll();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTableChanges('criterias', fetchAll);
 
     return () => {
       isMounted = false;
-      supabase.removeChannel(channel);
+      unsubscribe();
       setAllCriteriasCache([]);
     };
   }, []);

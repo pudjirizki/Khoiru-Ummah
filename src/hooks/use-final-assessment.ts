@@ -13,6 +13,7 @@ import { useDatabaseStudent } from '/src/hooks/use-database-student';
 import { useDatabaseAssessment } from '/src/hooks/use-database-assessment';
 import { useDatabaseNotification } from '/src/hooks/use-database-notification';
 import { useDatabaseAnswerDetail } from '/src/hooks/use-database-answer-detail';
+import { toError } from '/src/utils/to-error';
 
 // ----------------------------------------------------------------------
 
@@ -231,8 +232,6 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
     [fetchAssessmentById]
   );
 
-  const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
-
   const createFinalAssessment = useCallback(
     async (payload: PayloadCreateFinalAssessmentInterface) => {
       const getId = (res: unknown): string | undefined => {
@@ -315,7 +314,7 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
 
         return await fetchAssessmentById(assessmentId);
       } catch (error) {
-        throw safeWrapError(error);
+        throw toError(error);
       }
     },
     [allStudentsCache, allUsersCache, createAnswer, createAnswerDetail, createAssessment, createNotification, fetchAssessmentById]
@@ -422,7 +421,7 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
 
         return updated;
       } catch (err) {
-        throw safeWrapError(err);
+        throw toError(err);
       }
     },
     [createAnswer, createAnswerDetail, fetchAssessmentById, updateAnswer, updateAnswerDetail, updateAssessment]
@@ -432,13 +431,13 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
     async (id: string): Promise<boolean> => {
       if (!id) return false;
       try {
-        const existingAnswers = (allAnswersCache || []).filter((c: any) => c.formId === id);
+        const existingAnswers = (allAnswersCache || []).filter((answer) => answer.assessmentId === id);
 
         await Promise.all(
-          existingAnswers.map(async (c: any) => {
-            const questionsForC = (allAnswerDetailsCache || []).filter((q: any) => q.criteriaId === c.id);
-            await Promise.all(questionsForC.map((q: any) => deleteAnswerDetail(q.id)));
-            await deleteAnswer(c.id);
+          existingAnswers.map(async (answer) => {
+            const detailsForAnswer = (allAnswerDetailsCache || []).filter((detail) => detail.answerId === answer.id);
+            await Promise.all(detailsForAnswer.map((detail) => deleteAnswerDetail(detail.id)));
+            await deleteAnswer(answer.id);
           })
         );
 
@@ -449,7 +448,7 @@ export const useFinalAssessment = (): UseFinalAssessmentInterface => {
 
         return true;
       } catch (err) {
-        throw safeWrapError(err);
+        throw toError(err);
       }
     },
     [allAnswerDetailsCache, allAnswersCache, deleteAnswer, deleteAnswerDetail, deleteAssessment]

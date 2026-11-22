@@ -21,6 +21,10 @@ import { DataTable } from '/src/components/table';
 interface StudentTableProps {
   students: UseDatabaseStudentInterface['students'];
   studentsList: UseDatabaseStudentInterface['studentsList'];
+  filters: {
+    search?: string;
+    class?: string;
+  };
   page: UseDatabaseStudentInterface['page'];
   perPage: UseDatabaseStudentInterface['perPage'];
   totalCount: UseDatabaseStudentInterface['totalCount'];
@@ -33,7 +37,7 @@ interface StudentTableProps {
 
 // ----------------------------------------------------------------------
 
-const StudentTable: React.FC<StudentTableProps> = ({ students: loadStudents, studentsList, page, perPage, totalCount, isLoading, onNext, onPrev, subscribePage, onDeleteStudent }) => {
+const StudentTable: React.FC<StudentTableProps> = ({ students: loadStudents, studentsList, filters, page, perPage, totalCount, isLoading, onNext, onPrev, subscribePage, onDeleteStudent }) => {
   const [sorting, setSorting] = useState<SortingState>([]);
 
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
@@ -103,9 +107,9 @@ const StudentTable: React.FC<StudentTableProps> = ({ students: loadStudents, stu
 
   const handlePerPageChange = useCallback(
     (pp: number) => {
-      loadStudents({ perPage: pp });
+      loadStudents({ ...filters, perPage: pp });
     },
-    [loadStudents]
+    [filters, loadStudents]
   );
 
   const handlePageChange = useCallback(

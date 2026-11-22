@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 // supabase
 import { supabase } from '/src/supabase';
+import { subscribeToTableChanges } from '/src/supabase/realtime';
 // interfaces
 import { FormInterface, FormsParamsInterface, PayloadCreateFormInterface } from '/src/interfaces/form';
 
@@ -96,16 +97,11 @@ export const useDatabaseForm = (): UseDatabaseFormInterface => {
 
     fetchAll();
 
-    const channel = supabase
-      .channel('forms-cache')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'forms' }, () => {
-        fetchAll();
-      })
-      .subscribe();
+    const unsubscribe = subscribeToTableChanges('forms', fetchAll);
 
     return () => {
       isMounted = false;
-      supabase.removeChannel(channel);
+      unsubscribe();
       setAllFormsCache([]);
     };
   }, []);
@@ -213,11 +209,12 @@ export const useDatabaseForm = (): UseDatabaseFormInterface => {
         .limit(1)
         .single();
 
-      if (error || !data) return null;
+      if (error) throw new Error(error.message);
+      if (!data) return null;
       return mapForm(data);
     } catch (err) {
       console.error('fetchFormById error', err);
-      return null;
+      throw err;
     }
   }, []);
 

@@ -59,6 +59,7 @@ const StudentView: React.FC = () => {
 
         <StudentTable
           studentsList={studentsList}
+          filters={filters}
           page={page}
           perPage={perPage}
           totalCount={totalCount}

@@ -1,8 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 // supabase
 import { supabase } from '/src/supabase';
+import { subscribeToTableChanges } from '/src/supabase/realtime';
 // interfaces
 import { AssessmentInterface, AssessmentsParamsInterface, PayloadCreateAssessmentInterface } from '/src/interfaces/assessment';
+import { toError } from '/src/utils/to-error';
 
 // ----------------------------------------------------------------------
 
@@ -40,8 +43,6 @@ const mapAssessment = (data: any): AssessmentInterface => ({
   updatedAt: data.updated_at ? new Date(data.updated_at) : new Date(data.updatedAt || Date.now()),
 });
 
-const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
-
 // ----------------------------------------------------------------------
 
 export const useDatabaseAssessment = (): UseDatabaseAssessmentInterface => {
@@ -63,10 +64,8 @@ export const useDatabaseAssessment = (): UseDatabaseAssessmentInterface => {
       if (data && isMounted) setAllAssessmentsCache(data.map(mapAssessment));
     };
     fetchAll();
-    const channel = supabase.channel('public:assessments_cache')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'assessments' }, () => fetchAll())
-      .subscribe();
-    return () => { isMounted = false; supabase.removeChannel(channel); };
+    const unsubscribe = subscribeToTableChanges('assessments', fetchAll);
+    return () => { isMounted = false; unsubscribe(); };
   }, []);
 
   const subscribePage = useCallback(async (pageIndex: number) => {
@@ -121,6 +120,7 @@ export const useDatabaseAssessment = (): UseDatabaseAssessmentInterface => {
   const createAssessment = useCallback(async (payload: PayloadCreateAssessmentInterface) => {
     try {
       const { data, error } = await supabase.from('assessments').insert({
+        id: uuidv4(),
         form_id: payload.formId,
         student_id: payload.studenId,
         student_class: payload.studentClass ?? '',
@@ -130,7 +130,7 @@ export const useDatabaseAssessment = (): UseDatabaseAssessmentInterface => {
       }).select().single();
       if (error) throw error;
       return { id: data.id, formId: payload.formId, studenId: payload.studenId, userId: payload.userId, score: payload.score };
-    } catch (error) { throw safeWrapError(error); }
+    } catch (error) { throw toError(error); }
   }, []);
 
   const updateAssessment = useCallback(async (id: string, payload: Partial<Omit<AssessmentInterface, 'id' | 'createdAt' | 'updatedAt'>>): Promise<AssessmentInterface | null> => {
@@ -146,7 +146,7 @@ export const useDatabaseAssessment = (): UseDatabaseAssessmentInterface => {
       const { data, error } = await supabase.from('assessments').update(updateData).eq('id', id).select().single();
       if (error) throw error;
       return mapAssessment(data);
-    } catch (err) { throw safeWrapError(err); }
+    } catch (err) { throw toError(err); }
   }, []);
 
   const deleteAssessment = useCallback(async (id: string): Promise<boolean> => {
@@ -157,7 +157,7 @@ export const useDatabaseAssessment = (): UseDatabaseAssessmentInterface => {
       setAllAssessmentsCache((prev) => prev.filter((u) => u.id !== id));
       setAssessmentsList((prev) => prev.filter((u) => u.id !== id));
       return true;
-    } catch (err) { throw safeWrapError(err); }
+    } catch (err) { throw toError(err); }
   }, []);
 
   return { assessmentsList, isLoading, page, perPage: perPageRef.current, maxPages, hasNext, hasPrev, assessments, nextPage, prevPage, resetPagination, getAssessmentById, fetchAssessmentById, createAssessment, updateAssessment, deleteAssessment, allAssessmentsCache };

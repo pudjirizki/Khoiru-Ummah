@@ -179,7 +179,7 @@ export const useFinalForm = (): UseFinalFormInterface => {
               .from('questions')
               .select('*')
               .eq('criteria_id', c.id)
-              .order('order_num', { ascending: true });
+              .order('order', { ascending: true });
 
             if (qErr) throw qErr;
 
@@ -187,7 +187,7 @@ export const useFinalForm = (): UseFinalFormInterface => {
               id: q.id,
               criteriaId: q.criteria_id,
               text: q.text,
-              order: q.order_num ?? i + 1,
+              order: q.order ?? i + 1,
               createdAt: formatTimestamp(q.created_at),
               updatedAt: formatTimestamp(q.updated_at),
             }));
@@ -217,7 +217,7 @@ export const useFinalForm = (): UseFinalFormInterface => {
         };
       } catch (error) {
         console.error('fetchFinalFormById error:', error);
-        return null;
+        throw error;
       }
     },
     [fetchFormById]

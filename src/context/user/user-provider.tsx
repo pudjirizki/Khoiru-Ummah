@@ -110,24 +110,31 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
   useEffect(() => {
     update('isLoading', true);
 
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (session?.user) {
-        try {
-          await ensureActiveUser(session.user.id);
-          sessionStorage.setItem(ACCESS_TOKEN_KEY, session.access_token);
-          const encrypted = fEncrypt({ ...session.user, uid: session.user.id }, USER_KEY);
-          update('user', encrypted);
-          update('status', 'authenticated');
-        } catch {
-          await cleanupAuthSession();
+    supabase.auth
+      .getSession()
+      .then(async ({ data: { session } }) => {
+        if (session?.user) {
+          try {
+            await ensureActiveUser(session.user.id);
+            sessionStorage.setItem(ACCESS_TOKEN_KEY, session.access_token);
+            const encrypted = fEncrypt({ ...session.user, uid: session.user.id }, USER_KEY);
+            update('user', encrypted);
+            update('status', 'authenticated');
+          } catch {
+            await cleanupAuthSession();
+          }
+        } else {
+          sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+          update('user', '');
+          update('status', 'unauthenticated');
         }
-      } else {
-        sessionStorage.removeItem(ACCESS_TOKEN_KEY);
-        update('user', '');
-        update('status', 'unauthenticated');
-      }
-      update('isLoading', false);
-    });
+      })
+      .catch(async () => {
+        await cleanupAuthSession();
+      })
+      .finally(() => {
+        update('isLoading', false);
+      });
 
     const {
       data: { subscription },
@@ -136,6 +143,7 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
         sessionStorage.removeItem(ACCESS_TOKEN_KEY);
         update('user', '');
         update('status', 'unauthenticated');
+        update('isLoading', false);
       } else if (event === 'SIGNED_IN' && session?.user) {
         try {
           await ensureActiveUser(session.user.id);
@@ -145,6 +153,8 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
           update('status', 'authenticated');
         } catch {
           await cleanupAuthSession();
+        } finally {
+          update('isLoading', false);
         }
       }
     });
@@ -169,7 +179,7 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
           throw error;
         }
 
-        const user = data.user;
+        const { user } = data;
         if (user) {
           await ensureActiveUser(user.id);
           const accessToken = data.session?.access_token || '';
@@ -246,38 +256,43 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
           }
         }
 
-        const { data: currentSessionData } = await supabase.auth.getSession();
-        const currentSession = currentSessionData.session;
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        const accessToken = sessionData.session?.access_token;
 
-        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-          email: sanitizedEmail,
-          password: payload.password,
-        });
-
-        // Restore admin session if registering another user
-        if (currentSession) {
-          await supabase.auth.setSession({
-            access_token: currentSession.access_token,
-            refresh_token: currentSession.refresh_token,
-          });
+        if (sessionError || !accessToken) {
+          throw new Error('Sesi admin tidak valid.');
         }
 
-        if (signUpError) throw signUpError;
+        let response: Response;
+        try {
+          response = await fetch('/api/create-user', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              name: payload.name,
+              nameLowercase: payload.nameLowercase,
+              phoneNumber: sanitizedPhoneNumber,
+              role: payload.role,
+              email: sanitizedEmail,
+              password: payload.password,
+              status: payload.status,
+            }),
+          });
+        } catch {
+          throw new Error('Server API lokal tidak aktif. Jalankan ulang aplikasi dengan `npm run dev`.');
+        }
 
-        const authId = signUpData.user?.id || '';
-
-        const { error: insertError } = await supabase.from('users').insert({
-          auth_id: authId,
-          name: payload.name,
-          name_lowercase: payload.name.toLowerCase(),
-          phone_number: sanitizedPhoneNumber,
-          role: payload.role,
-          email: sanitizedEmail,
-          status: payload.status,
-        });
-
-        if (insertError) {
-          throw insertError;
+        let result: { message?: string };
+        try {
+          result = await response.json();
+        } catch {
+          throw new Error(`Respons server API tidak valid (HTTP ${response.status}). Periksa log API.`);
+        }
+        if (!response.ok) {
+          throw new Error(result.message || 'Pengguna gagal ditambahkan.');
         }
       } catch (error: any) {
         throw safeWrapError(error);
@@ -368,12 +383,36 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
       try {
         update('isLoading', true);
 
-        const { error } = await supabase.from('users').delete().eq('id', id);
-        if (error) throw error;
-
         const { data: currentSessionData } = await supabase.auth.getSession();
+        const accessToken = currentSessionData.session?.access_token;
+        if (!accessToken) {
+          throw new Error('Sesi admin tidak valid.');
+        }
         if (currentSessionData.session?.user?.id === authId) {
-          await cleanupAuthSession();
+          throw new Error('Akun yang sedang digunakan tidak dapat dihapus.');
+        }
+
+        const response = await fetch('/api/delete-user', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ userId: id }),
+        });
+
+        const responseText = await response.text();
+        let result: { message?: string } = {};
+        try {
+          result = responseText ? JSON.parse(responseText) : {};
+        } catch {
+          if (!response.ok) {
+            throw new Error(`Server gagal menghapus pengguna (HTTP ${response.status}; respons bukan JSON).`);
+          }
+          throw new Error(`Respons server hapus tidak valid (HTTP ${response.status}).`);
+        }
+        if (!response.ok) {
+          throw new Error(result.message || `Pengguna gagal dihapus (HTTP ${response.status}).`);
         }
       } catch (err) {
         throw safeWrapError(err);
@@ -381,7 +420,7 @@ export const UserProvider: React.FC<UserProviderProps> = ({ children }) => {
         update('isLoading', false);
       }
     },
-    [cleanupAuthSession, update]
+    [update]
   );
 
   // LOGOUT

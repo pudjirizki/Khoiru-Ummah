@@ -62,6 +62,7 @@ const UserView: React.FC = () => {
 
         <UserTable
           usersList={usersList}
+          filters={filters}
           page={page}
           perPage={perPage}
           totalCount={totalCount}

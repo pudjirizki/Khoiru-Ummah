@@ -3,7 +3,6 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { EMAIL_TEMPLATES } from '../src/lib/email/templates/index.js';
 import { EmailType, SendEmailPayload, TemplateData } from '../src/lib/email/email-types.js';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
 const DEFAULT_FROM = 'Khoiru Ummah <noreply@keansignature.com>';
 // const DEFAULT_FROM = 'Khoiru Ummah <noreply@resend.dev>';
 
@@ -42,6 +41,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const subject = SUBJECT_MAP[type](templateData);
 
   try {
+    if (!process.env.RESEND_API_KEY) {
+      res.status(500).json({ error: 'Konfigurasi pengirim email belum tersedia.' });
+      return;
+    }
+
+    const resend = new Resend(process.env.RESEND_API_KEY);
     const { data, error } = await resend.emails.send({
       from: DEFAULT_FROM,
       to: recipients,

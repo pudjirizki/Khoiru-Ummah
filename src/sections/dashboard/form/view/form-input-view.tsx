@@ -32,8 +32,10 @@ interface FormInputViewProps {
 
 const FormInputView: React.FC<FormInputViewProps> = ({ slug }) => {
   const [currentForm, setCurrentForm] = useState<FinalFormInterface | null>(null);
+  const [isLoadingForm, setIsLoadingForm] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  const { allUsersCache, currentUser } = useDatabaseUser();
+  const { allUsersCache, currentUser, isLoadingUser } = useDatabaseUser();
 
   const { allStudentsCache } = useDatabaseStudent();
 
@@ -43,14 +45,45 @@ const FormInputView: React.FC<FormInputViewProps> = ({ slug }) => {
 
   // GET CURRENT FORM
   useEffect(() => {
-    const fetch = async () => {
-      const res = await fetchFinalFormById(slug);
+    let isMounted = true;
 
-      setCurrentForm(res);
+    const fetch = async () => {
+      setCurrentForm(null);
+      setLoadError(null);
+      setIsLoadingForm(true);
+
+      try {
+        const res = await fetchFinalFormById(slug);
+        if (!isMounted) return;
+
+        if (!res) {
+          setLoadError('Formulir tidak ditemukan atau tidak dapat diakses.');
+        }
+        setCurrentForm(res);
+      } catch (error) {
+        if (!isMounted) return;
+        if (error instanceof Error) {
+          setLoadError(error.message);
+        } else if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string') {
+          setLoadError(error.message);
+        } else {
+          setLoadError(String(error));
+        }
+      } finally {
+        if (isMounted) setIsLoadingForm(false);
+      }
     };
 
-    fetch();
+    void fetch();
+
+    return () => {
+      isMounted = false;
+    };
   }, [fetchFinalFormById, slug]);
+
+  const questionCount =
+    currentForm?.criterias.reduce((total, criteria) => total + (criteria.questions?.length ?? 0), 0) ?? 0;
+  const canAssess = currentUser?.databaseUsers?.role === 'teacher' || currentUser?.databaseUsers?.role === 'parent';
 
   return (
     <section>
@@ -78,7 +111,37 @@ const FormInputView: React.FC<FormInputViewProps> = ({ slug }) => {
         </div>
       </div>
 
-      {currentForm && currentUser && (
+      {(isLoadingForm || isLoadingUser) && (
+        <p role="status" className="mt-5 rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 shadow-sm">
+          Memuat data formulir...
+        </p>
+      )}
+
+      {!isLoadingForm && loadError && (
+        <div role="alert" className="mt-5 rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-800">
+          Formulir tidak dapat dimuat: {loadError}
+        </div>
+      )}
+
+      {!isLoadingForm && !isLoadingUser && !loadError && !currentUser?.databaseUsers && (
+        <div role="alert" className="mt-5 rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-800">
+          Data akun Anda tidak dapat dimuat. Silakan muat ulang halaman atau hubungi admin.
+        </div>
+      )}
+
+      {!isLoadingUser && currentUser?.databaseUsers?.role === 'admin' && (
+        <div role="alert" className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
+          Akun admin hanya digunakan untuk mengelola data. Penilaian siswa dilakukan oleh guru dan wali siswa.
+        </div>
+      )}
+
+      {!isLoadingForm && !isLoadingUser && canAssess && currentForm && questionCount === 0 && (
+        <div role="alert" className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
+          Formulir ini belum memiliki pertanyaan penilaian. Hubungi guru atau admin untuk melengkapi kriteria dan pertanyaannya.
+        </div>
+      )}
+
+      {!isLoadingForm && !isLoadingUser && canAssess && currentForm && questionCount > 0 && (
         <InputForm
           currentForm={currentForm}
           currentUser={currentUser}

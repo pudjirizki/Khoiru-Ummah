@@ -8,7 +8,7 @@ import { paths } from '/src/routes/paths';
 // hooks
 import { UseDatabaseUserInterface } from '/src/hooks/use-database-user';
 // interfaces
-import { StatusUserType, UserInterface } from '/src/interfaces/user';
+import { RoleUserType, StatusUserType, UserInterface } from '/src/interfaces/user';
 // utils
 import { fDate } from '/src/utils/format-time';
 // components
@@ -22,6 +22,11 @@ import { DialogConfirm } from '/src/components/dialog';
 interface UserTableProps {
   users: UseDatabaseUserInterface['users'];
   usersList: UseDatabaseUserInterface['usersList'];
+  filters: {
+    search?: string;
+    role?: RoleUserType;
+    status?: StatusUserType;
+  };
   page: UseDatabaseUserInterface['page'];
   perPage: UseDatabaseUserInterface['perPage'];
   totalCount: UseDatabaseUserInterface['totalCount'];
@@ -44,7 +49,7 @@ const roleMap = new Map<string, string>([
 
 // ----------------------------------------------------------------------
 
-const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, usersList, page, perPage, totalCount, isLoadingUsers, onUpdate, onDelete, currentUserId, onNext, onPrev, subscribePage }) => {
+const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, usersList, filters, page, perPage, totalCount, isLoadingUsers, onUpdate, onDelete, currentUserId, onNext, onPrev, subscribePage }) => {
   const [sorting, setSorting] = useState<SortingState>([]);
 
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
@@ -60,13 +65,14 @@ const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, usersList, page
       try {
         const newStatus = getNextStatus(status);
         await onUpdate(id, { status: newStatus });
+        await subscribePage(page);
         enqueueSnackbar('Status berhasil diubah');
       } catch (error: any) {
         enqueueSnackbar(error.message, { variant: 'error' });
         console.error(error);
       }
     },
-    [enqueueSnackbar, getNextStatus, onUpdate]
+    [enqueueSnackbar, getNextStatus, onUpdate, page, subscribePage]
   );
 
   const columns = useMemo(
@@ -124,9 +130,9 @@ const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, usersList, page
 
   const handlePerPageChange = useCallback(
     (pp: number) => {
-      loadUsers({ perPage: pp });
+      loadUsers({ ...filters, perPage: pp });
     },
-    [loadUsers]
+    [filters, loadUsers]
   );
 
   const handlePageChange = useCallback(
@@ -151,13 +157,15 @@ const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, usersList, page
 
       try {
         await onDelete(user.id, user.authId);
+        const nextPage = page > 1 && usersList.length === 1 ? page - 1 : page;
+        await subscribePage(nextPage);
         enqueueSnackbar(`Pengguna ${user.name} berhasil dihapus.`);
       } catch (error) {
         console.error(error);
         enqueueSnackbar(error instanceof Error ? error.message : 'Pengguna gagal dihapus.', { variant: 'error' });
       }
     },
-    [currentUserId, enqueueSnackbar, onDelete]
+    [currentUserId, enqueueSnackbar, onDelete, page, subscribePage, usersList.length]
   );
 
   const handleDeleteSelected = useCallback(async () => {
@@ -192,12 +200,17 @@ const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, usersList, page
     if (failedIds.length > 0) enqueueSnackbar(`${failedIds.length} pengguna gagal dihapus.`, { variant: 'error' });
     if (skippedCount > 0) enqueueSnackbar('Akun yang sedang digunakan tidak dapat dihapus.', { variant: 'warning' });
 
+    if (successCount > 0) {
+      const nextPage = page > 1 && usersList.length <= successCount ? page - 1 : page;
+      await subscribePage(nextPage);
+    }
+
     const nextSelection: RowSelectionState = {};
     failedIds.forEach((id) => {
       nextSelection[id] = true;
     });
     setRowSelection(nextSelection);
-  }, [currentUserId, enqueueSnackbar, onDelete, selectedUserIds, usersList]);
+  }, [currentUserId, enqueueSnackbar, onDelete, page, selectedUserIds, subscribePage, usersList]);
 
   const handleToggleStatusSelected = useCallback(async () => {
     if (selectedUserIds.length === 0) return;
@@ -221,6 +234,8 @@ const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, usersList, page
       if (successCount > 0) enqueueSnackbar(`${successCount} pengguna berhasil diubah statusnya`);
       if (failedIds.length > 0) enqueueSnackbar(`${failedIds.length} pengguna gagal diubah statusnya`, { variant: 'error' });
 
+      if (successCount > 0) await subscribePage(page);
+
       const nextSelection: RowSelectionState = {};
       failedIds.forEach((id) => {
         nextSelection[id] = true;
@@ -230,7 +245,7 @@ const UserTable: React.FC<UserTableProps> = ({ users: loadUsers, usersList, page
       console.error(error);
       enqueueSnackbar(error.message, { variant: 'error' });
     }
-  }, [enqueueSnackbar, getNextStatus, onUpdate, selectedUserIds, userStatusMap]);
+  }, [enqueueSnackbar, getNextStatus, onUpdate, page, selectedUserIds, subscribePage, userStatusMap]);
 
   return (
     <>

@@ -1,8 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 // supabase
 import { supabase } from '/src/supabase';
+import { subscribeToTableChanges } from '/src/supabase/realtime';
 // interfaces
 import { AnswerInterface, AnswersParamsInterface, PayloadCreateAnswerInterface } from '/src/interfaces/answer';
+import { toError } from '/src/utils/to-error';
 
 // ----------------------------------------------------------------------
 
@@ -37,8 +40,6 @@ const mapAnswer = (data: any): AnswerInterface => ({
   updatedAt: data.updated_at ? new Date(data.updated_at) : new Date(data.updatedAt || Date.now()),
 });
 
-const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
-
 // ----------------------------------------------------------------------
 
 export const useDatabaseAnswer = (): UseDatabaseAnswerInterface => {
@@ -60,10 +61,8 @@ export const useDatabaseAnswer = (): UseDatabaseAnswerInterface => {
       if (data && isMounted) setAllAnswersCache(data.map(mapAnswer));
     };
     fetchAll();
-    const channel = supabase.channel('public:answers_cache')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'answers' }, () => fetchAll())
-      .subscribe();
-    return () => { isMounted = false; supabase.removeChannel(channel); };
+    const unsubscribe = subscribeToTableChanges('answers', fetchAll);
+    return () => { isMounted = false; unsubscribe(); };
   }, []);
 
   const subscribePage = useCallback(async (pageIndex: number) => {
@@ -117,13 +116,14 @@ export const useDatabaseAnswer = (): UseDatabaseAnswerInterface => {
   const createAnswer = useCallback(async (payload: PayloadCreateAnswerInterface) => {
     try {
       const { data, error } = await supabase.from('answers').insert({
+        id: uuidv4(),
         criteria_id: payload.criteriaId,
         assessment_id: payload.assessmentId,
         average_point: payload.averagePoint,
       }).select().single();
       if (error) throw error;
       return { id: data.id, criteriaId: payload.criteriaId, assessmentId: payload.assessmentId, averagePoint: payload.averagePoint };
-    } catch (error) { throw safeWrapError(error); }
+    } catch (error) { throw toError(error); }
   }, []);
 
   const updateAnswer = useCallback(async (id: string, payload: Partial<Omit<AnswerInterface, 'id' | 'createdAt' | 'updatedAt'>>): Promise<AnswerInterface | null> => {
@@ -136,7 +136,7 @@ export const useDatabaseAnswer = (): UseDatabaseAnswerInterface => {
       const { data, error } = await supabase.from('answers').update(updateData).eq('id', id).select().single();
       if (error) throw error;
       return mapAnswer(data);
-    } catch (err) { throw safeWrapError(err); }
+    } catch (err) { throw toError(err); }
   }, []);
 
   const deleteAnswer = useCallback(async (id: string): Promise<boolean> => {
@@ -147,7 +147,7 @@ export const useDatabaseAnswer = (): UseDatabaseAnswerInterface => {
       setAllAnswersCache((prev) => prev.filter((u) => u.id !== id));
       setAnswersList((prev) => prev.filter((u) => u.id !== id));
       return true;
-    } catch (err) { throw safeWrapError(err); }
+    } catch (err) { throw toError(err); }
   }, []);
 
   return { answersList, isLoading, page, perPage: perPageRef.current, maxPages, hasNext, hasPrev, answers, nextPage, prevPage, resetPagination, getAnswerById, fetchAnswerById, createAnswer, updateAnswer, deleteAnswer, allAnswersCache };

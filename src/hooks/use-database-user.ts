@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useUserContext } from '/src/context/user';
 // supabase
 import { supabase } from '/src/supabase';
+import { subscribeToTableChanges } from '/src/supabase/realtime';
 // interfaces
 import { CurrentUserInterface, UserInterface, RoleUserType, UsersParamsInterface } from '/src/interfaces/user';
 // config-global
@@ -88,20 +89,11 @@ export const useDatabaseUser = (): UseDatabaseUserInterface => {
 
     fetchAll();
 
-    const channel = supabase
-      .channel('public:users_all_cache')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'users' },
-        () => {
-          fetchAll();
-        }
-      )
-      .subscribe();
+    const unsubscribe = subscribeToTableChanges('users', fetchAll);
 
     return () => {
       isMounted = false;
-      supabase.removeChannel(channel);
+      unsubscribe();
       setAllUsersCache([]);
     };
   }, []);
@@ -162,25 +154,18 @@ export const useDatabaseUser = (): UseDatabaseUserInterface => {
 
     fetchCurrent();
 
-    const channel = supabase
-      .channel(`public:users_${authId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'users', filter: `auth_id=eq.${authId}` },
-        (payload) => {
+    const unsubscribe = subscribeToTableChanges('users', (payload) => {
           if (!isMounted) return;
           if (payload.new) {
             setCurrentUser({ ...userDecrypted, databaseUsers: mapUser(payload.new) });
           } else if (payload.eventType === 'DELETE') {
             setCurrentUser({ ...userDecrypted, databaseUsers: null });
           }
-        }
-      )
-      .subscribe();
+        }, `auth_id=eq.${authId}`);
 
     return () => {
       isMounted = false;
-      supabase.removeChannel(channel);
+      unsubscribe();
     };
   }, [user]);
 

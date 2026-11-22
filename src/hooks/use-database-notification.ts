@@ -1,9 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 // supabase
 import { supabase } from '/src/supabase';
+import { subscribeToTableChanges } from '/src/supabase/realtime';
 // interfaces
 import { RoleUserType } from '/src/interfaces/user';
 import { NotificationInterface, NotificationsParamsInterface, PayloadCreateNotificationInterface } from '/src/interfaces/notification';
+import { toError } from '/src/utils/to-error';
 
 // ----------------------------------------------------------------------
 
@@ -41,8 +44,6 @@ const mapNotification = (data: any): NotificationInterface => ({
   updatedAt: data.updated_at ? new Date(data.updated_at) : new Date(data.updatedAt || Date.now()),
 });
 
-const safeWrapError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
-
 // ----------------------------------------------------------------------
 
 export const useDatabaseNotification = (): UseDatabaseNotificationInterface => {
@@ -64,10 +65,8 @@ export const useDatabaseNotification = (): UseDatabaseNotificationInterface => {
       if (data && isMounted) setAllNotificationsCache(data.map(mapNotification));
     };
     fetchAll();
-    const channel = supabase.channel('public:notifications_cache')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, () => fetchAll())
-      .subscribe();
-    return () => { isMounted = false; supabase.removeChannel(channel); };
+    const unsubscribe = subscribeToTableChanges('notifications', fetchAll);
+    return () => { isMounted = false; unsubscribe(); };
   }, []);
 
   const subscribePage = useCallback(async (pageIndex: number) => {
@@ -121,17 +120,19 @@ export const useDatabaseNotification = (): UseDatabaseNotificationInterface => {
 
   const createNotification = useCallback(async (payload: PayloadCreateNotificationInterface) => {
     try {
-      const { data, error } = await supabase.from('notifications').insert({
+      const id = uuidv4();
+      const { error } = await supabase.from('notifications').insert({
+        id,
         user_id: payload.userId,
         form_id: payload.formId,
         name: payload.name,
         description: payload.description,
         target_role: payload.targetRole,
         is_read: payload.isRead,
-      }).select().single();
+      });
       if (error) throw error;
-      return { id: data.id, userId: payload.userId, formId: payload.formId, name: payload.name, description: payload.description, targetRole: payload.targetRole, isRead: payload.isRead };
-    } catch (error) { throw safeWrapError(error); }
+      return { id, userId: payload.userId, formId: payload.formId, name: payload.name, description: payload.description, targetRole: payload.targetRole, isRead: payload.isRead };
+    } catch (error) { throw toError(error); }
   }, []);
 
   const updateNotification = useCallback(async (id: string, payload: Partial<Omit<NotificationInterface, 'id' | 'createdAt' | 'updatedAt'>>): Promise<NotificationInterface | null> => {
@@ -147,7 +148,7 @@ export const useDatabaseNotification = (): UseDatabaseNotificationInterface => {
       const { data, error } = await supabase.from('notifications').update(updateData).eq('id', id).select().single();
       if (error) throw error;
       return mapNotification(data);
-    } catch (err) { throw safeWrapError(err); }
+    } catch (err) { throw toError(err); }
   }, []);
 
   const deleteNotification = useCallback(async (id: string): Promise<boolean> => {
@@ -158,7 +159,7 @@ export const useDatabaseNotification = (): UseDatabaseNotificationInterface => {
       setAllNotificationsCache((prev) => prev.filter((u) => u.id !== id));
       setNotificationsList((prev) => prev.filter((u) => u.id !== id));
       return true;
-    } catch (err) { throw safeWrapError(err); }
+    } catch (err) { throw toError(err); }
   }, []);
 
   return { notificationsList, isLoading, page, perPage: perPageRef.current, maxPages, hasNext, hasPrev, notifications, nextPage, prevPage, resetPagination, getNotificationById, fetchNotificationById, createNotification, updateNotification, deleteNotification, allNotificationsCache };
