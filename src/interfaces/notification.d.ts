@@ -5,7 +5,7 @@ import { RoleUserType } from './user';
 export interface NotificationInterface {
   id: string;
   userId: string;
-  formId: string;
+  formId: string | null;
   name: string;
   description: string;
   targetRole: RoleUserType;
@@ -24,7 +24,7 @@ export interface NotificationsParamsInterface {
 
 export interface PayloadCreateNotificationInterface {
   userId: string;
-  formId: string;
+  formId: string | null;
   name: string;
   description: string;
   targetRole: RoleUserType;
@@ -33,7 +33,7 @@ export interface PayloadCreateNotificationInterface {
 
 export interface PayloadUpdateNotificationInterface {
   userId?: string;
-  formId?: string;
+  formId?: string | null;
   name?: string;
   description?: string;
   targetRole?: RoleUserType;

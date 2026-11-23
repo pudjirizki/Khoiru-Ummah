@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 // supabase
 import { supabase } from '/src/supabase';
+import { useDatabaseNotification } from '/src/hooks/use-database-notification';
 // interfaces
 import { TeacherAttendanceInterface, TeacherAttendanceStatus } from '/src/interfaces/attendance';
 import { UserInterface } from '/src/interfaces/user';
@@ -35,6 +36,7 @@ export const useDatabaseAttendance = (teacher: UserInterface | null, date: strin
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
   const teacherId = teacher?.id;
+  const { createNotification } = useDatabaseNotification();
 
   useEffect(() => {
     let isCurrent = true;
@@ -118,13 +120,27 @@ export const useDatabaseAttendance = (teacher: UserInterface | null, date: strin
           verifiedByName: null,
           verifiedAt: null,
         });
+
+        try {
+          await createNotification({
+            userId: '',
+            formId: null,
+            name: teacher.name,
+            description: `mengirim absensi ${status === 'present' ? 'Hadir' : 'Tidak hadir'} untuk ${date}.`,
+            targetRole: 'admin',
+            isRead: false,
+          });
+        } catch (notificationError) {
+          console.error('Attendance saved, but admin notification failed', notificationError);
+          throw new Error(`Absensi tersimpan, tetapi notifikasi admin gagal dibuat: ${toError(notificationError).message}`);
+        }
       } catch (saveError) {
         throw toError(saveError);
       } finally {
         setIsSaving(false);
       }
     },
-    [date, teacher, teacherId]
+    [createNotification, date, teacher, teacherId]
   );
 
   return { attendance, isLoading, isSaving, error, saveAttendance };
