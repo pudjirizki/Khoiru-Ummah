@@ -2,8 +2,12 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 // context
 import { useUserContext } from '/src/context/user';
 // supabase
+<<<<<<< Updated upstream
 import { supabase } from '/src/supabase';
 import { subscribeToTableChanges } from '/src/supabase/realtime';
+=======
+import { createRealtimeChannel, supabase } from '/src/supabase';
+>>>>>>> Stashed changes
 // interfaces
 import { CurrentUserInterface, UserInterface, RoleUserType, UsersParamsInterface } from '/src/interfaces/user';
 // config-global
@@ -89,7 +93,19 @@ export const useDatabaseUser = (): UseDatabaseUserInterface => {
 
     fetchAll();
 
+<<<<<<< Updated upstream
     const unsubscribe = subscribeToTableChanges('users', fetchAll);
+=======
+    const channel = createRealtimeChannel('public:users_all_cache')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'users' },
+        () => {
+          fetchAll();
+        }
+      )
+      .subscribe();
+>>>>>>> Stashed changes
 
     return () => {
       isMounted = false;
@@ -154,7 +170,15 @@ export const useDatabaseUser = (): UseDatabaseUserInterface => {
 
     fetchCurrent();
 
+<<<<<<< Updated upstream
     const unsubscribe = subscribeToTableChanges('users', (payload) => {
+=======
+    const channel = createRealtimeChannel(`public:users_${authId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'users', filter: `auth_id=eq.${authId}` },
+        (payload) => {
+>>>>>>> Stashed changes
           if (!isMounted) return;
           if (payload.new) {
             setCurrentUser({ ...userDecrypted, databaseUsers: mapUser(payload.new) });

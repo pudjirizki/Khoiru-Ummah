@@ -69,7 +69,7 @@ const InputField = forwardRef<HTMLInputElement, InputFieldProps>(
             {...props}
           />
 
-          {radioLabel && <span className="text-sm leading-none">{radioLabel}</span>}
+          {radioLabel && <span className={twMerge('text-sm leading-none', radioLabelClassname)}>{radioLabel}</span>}
         </label>
       );
     }

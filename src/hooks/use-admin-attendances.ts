@@ -1,7 +1,11 @@
 import { useEffect, useState, useCallback } from 'react';
 // supabase
+<<<<<<< Updated upstream
 import { supabase } from '/src/supabase';
 import { subscribeToTableChanges } from '/src/supabase/realtime';
+=======
+import { createRealtimeChannel, supabase } from '/src/supabase';
+>>>>>>> Stashed changes
 // interfaces
 import { TeacherAttendanceInterface, TeacherAttendanceStatus } from '/src/interfaces/attendance';
 
@@ -59,7 +63,19 @@ export const useAdminAttendances = (date: string): UseAdminAttendancesInterface 
 
     fetchAttendances();
 
+<<<<<<< Updated upstream
     const unsubscribe = subscribeToTableChanges('teacher_attendance', fetchAttendances, `date=eq.${date}`);
+=======
+    const channel = createRealtimeChannel(`public:teacher_attendances_${date}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'teacher_attendances', filter: `date=eq.${date}` },
+        () => {
+          fetchAttendances();
+        }
+      )
+      .subscribe();
+>>>>>>> Stashed changes
 
     return () => {
       unsubscribe();
