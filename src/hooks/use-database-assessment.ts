@@ -1,12 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 // supabase
-<<<<<<< Updated upstream
 import { supabase } from '/src/supabase';
 import { subscribeToTableChanges } from '/src/supabase/realtime';
-=======
-import { createRealtimeChannel, supabase } from '/src/supabase';
->>>>>>> Stashed changes
 // interfaces
 import { AssessmentInterface, AssessmentsParamsInterface, PayloadCreateAssessmentInterface } from '/src/interfaces/assessment';
 import { toError } from '/src/utils/to-error';
@@ -68,15 +64,8 @@ export const useDatabaseAssessment = (): UseDatabaseAssessmentInterface => {
       if (data && isMounted) setAllAssessmentsCache(data.map(mapAssessment));
     };
     fetchAll();
-<<<<<<< Updated upstream
     const unsubscribe = subscribeToTableChanges('assessments', fetchAll);
     return () => { isMounted = false; unsubscribe(); };
-=======
-    const channel = createRealtimeChannel('public:assessments_cache')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'assessments' }, () => fetchAll())
-      .subscribe();
-    return () => { isMounted = false; supabase.removeChannel(channel); };
->>>>>>> Stashed changes
   }, []);
 
   const subscribePage = useCallback(async (pageIndex: number) => {

@@ -1,12 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 // supabase
-<<<<<<< Updated upstream
 import { supabase } from '/src/supabase';
 import { subscribeToTableChanges } from '/src/supabase/realtime';
-=======
-import { createRealtimeChannel, supabase } from '/src/supabase';
->>>>>>> Stashed changes
 // interfaces
 import { RoleUserType } from '/src/interfaces/user';
 import { NotificationInterface, NotificationsParamsInterface, PayloadCreateNotificationInterface } from '/src/interfaces/notification';
@@ -69,15 +65,8 @@ export const useDatabaseNotification = (): UseDatabaseNotificationInterface => {
       if (data && isMounted) setAllNotificationsCache(data.map(mapNotification));
     };
     fetchAll();
-<<<<<<< Updated upstream
     const unsubscribe = subscribeToTableChanges('notifications', fetchAll);
     return () => { isMounted = false; unsubscribe(); };
-=======
-    const channel = createRealtimeChannel('public:notifications_cache')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, () => fetchAll())
-      .subscribe();
-    return () => { isMounted = false; supabase.removeChannel(channel); };
->>>>>>> Stashed changes
   }, []);
 
   const subscribePage = useCallback(async (pageIndex: number) => {
@@ -158,7 +147,10 @@ export const useDatabaseNotification = (): UseDatabaseNotificationInterface => {
       if (payload.isRead !== undefined) updateData.is_read = payload.isRead;
       const { data, error } = await supabase.from('notifications').update(updateData).eq('id', id).select().single();
       if (error) throw error;
-      return mapNotification(data);
+      const updated = mapNotification(data);
+      setAllNotificationsCache((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      setNotificationsList((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      return updated;
     } catch (err) { throw toError(err); }
   }, []);
 

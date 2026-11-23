@@ -1,11 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 // supabase
-<<<<<<< Updated upstream
 import { supabase } from '/src/supabase';
 import { subscribeToTableChanges } from '/src/supabase/realtime';
-=======
-import { createRealtimeChannel, supabase } from '/src/supabase';
->>>>>>> Stashed changes
 // interfaces
 import { CriteriaInterface, PayloadCreateCriteriaInterface, CriteriasParamsInterface } from '/src/interfaces/criteria';
 
@@ -99,15 +95,7 @@ export const useDatabaseCriteria = (): UseDatabaseCriteriaInterface => {
 
     fetchAll();
 
-<<<<<<< Updated upstream
     const unsubscribe = subscribeToTableChanges('criterias', fetchAll);
-=======
-    const channel = createRealtimeChannel('criterias-cache')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'criterias' }, () => {
-        fetchAll();
-      })
-      .subscribe();
->>>>>>> Stashed changes
 
     return () => {
       isMounted = false;

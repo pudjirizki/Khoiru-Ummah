@@ -1,11 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 // supabase
-<<<<<<< Updated upstream
 import { supabase } from '/src/supabase';
 import { subscribeToTableChanges } from '/src/supabase/realtime';
-=======
-import { createRealtimeChannel, supabase } from '/src/supabase';
->>>>>>> Stashed changes
 // interfaces
 import { QuestionInterface, PayloadCreateQuestionInterface, QuestionsParamsInterface } from '/src/interfaces/question';
 
@@ -86,15 +82,7 @@ export const useDatabaseQuestion = (): UseDatabaseQuestionInterface => {
 
     fetchAll();
 
-<<<<<<< Updated upstream
     const unsubscribe = subscribeToTableChanges('questions', fetchAll);
-=======
-    const channel = createRealtimeChannel('questions-cache')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'questions' }, () => {
-        fetchAll();
-      })
-      .subscribe();
->>>>>>> Stashed changes
 
     return () => {
       isMounted = false;
