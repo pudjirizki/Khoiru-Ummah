@@ -25,7 +25,7 @@ export interface UseDatabaseNotificationInterface {
   getNotificationById: (id: string) => NotificationInterface | null;
   fetchNotificationById: (id: string) => Promise<NotificationInterface | null>;
   allNotificationsCache: NotificationInterface[];
-  createNotification: (payload: PayloadCreateNotificationInterface) => Promise<{ userId: string; formId: string; name: string; description: string; targetRole: RoleUserType; isRead: boolean; id: string }>;
+  createNotification: (payload: PayloadCreateNotificationInterface) => Promise<{ userId: string; formId: string | null; name: string; description: string; targetRole: RoleUserType; isRead: boolean; id: string }>;
   updateNotification: (id: string, payload: Partial<Omit<NotificationInterface, 'id' | 'createdAt' | 'updatedAt'>>) => Promise<NotificationInterface | null>;
   deleteNotification: (id: string) => Promise<boolean>;
 }
@@ -34,7 +34,7 @@ export interface UseDatabaseNotificationInterface {
 
 const mapNotification = (data: any): NotificationInterface => ({
   id: data.id,
-  formId: data.form_id ?? data.formId,
+  formId: data.form_id ?? data.formId ?? null,
   userId: data.user_id ?? data.userId,
   name: data.name,
   description: data.description,
@@ -56,18 +56,6 @@ export const useDatabaseNotification = (): UseDatabaseNotificationInterface => {
   const perPageRef = useRef<number>(5);
   const limitRef = useRef<number>(50);
   const paramsRef = useRef<NotificationsParamsInterface>({ formId: '', userId: '', targetRole: undefined, limit: 50, perPage: 5 });
-
-  // ALL CACHE with realtime
-  useEffect(() => {
-    let isMounted = true;
-    const fetchAll = async () => {
-      const { data } = await supabase.from('notifications').select('*').order('created_at', { ascending: true });
-      if (data && isMounted) setAllNotificationsCache(data.map(mapNotification));
-    };
-    fetchAll();
-    const unsubscribe = subscribeToTableChanges('notifications', fetchAll);
-    return () => { isMounted = false; unsubscribe(); };
-  }, []);
 
   const subscribePage = useCallback(async (pageIndex: number) => {
     const pageSize = perPageRef.current;
@@ -93,6 +81,22 @@ export const useDatabaseNotification = (): UseDatabaseNotificationInterface => {
       setPage(pageIndex);
     }
   }, []);
+
+  // Keep the admin notification badge in sync when a new notification arrives.
+  useEffect(() => {
+    let isMounted = true;
+    const fetchAll = async () => {
+      const { data } = await supabase.from('notifications').select('*').order('created_at', { ascending: true });
+      if (data && isMounted) setAllNotificationsCache(data.map(mapNotification));
+    };
+    const refreshNotifications = () => {
+      fetchAll();
+      subscribePage(1);
+    };
+    fetchAll();
+    const unsubscribe = subscribeToTableChanges('notifications', refreshNotifications);
+    return () => { isMounted = false; unsubscribe(); };
+  }, [subscribePage]);
 
   const notifications = useCallback((params?: NotificationsParamsInterface) => {
     paramsRef.current = { formId: params?.formId ?? '', userId: params?.userId ?? '', targetRole: params?.targetRole, limit: params?.limit ?? 50, perPage: params?.perPage ?? 5 };
