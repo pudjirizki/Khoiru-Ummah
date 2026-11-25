@@ -1,10 +1,15 @@
 import type ExcelJS from 'exceljs';
 import {
+  AcademicSubjectReportRow,
   createClassReportFileName,
   createReportFileName,
+  ExtracurricularReportRow,
   formatReportDate,
+  GradePair,
   ReportItem,
   ReportStudent,
+  TahfizhReportRow,
+  TahsinReportRow,
 } from './report-data';
 
 const escapeHtml = (value: string | number | null | undefined): string =>
@@ -15,21 +20,212 @@ const escapeHtml = (value: string | number | null | undefined): string =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
-const renderTableHtml = (titleHeader: string, items: ReportItem[]): string => {
+const formatScore = (score: number | null | undefined): string =>
+  score !== null && score !== undefined && Number.isFinite(score) ? String(score) : '-';
+
+const formatBlankScore = (score: number | null | undefined): string =>
+  score !== null && score !== undefined && Number.isFinite(score) ? String(score) : '';
+
+const renderGradePairCells = (pair: GradePair): string =>
+  `<td class="td-score">${escapeHtml(formatBlankScore(pair.score))}</td><td class="td-letter">${escapeHtml(pair.letter || '')}</td>`;
+
+const renderStandardSubjectTableHtml = (
+  rows: AcademicSubjectReportRow[],
+  metricHeaders: string[] = ['Pengetahuan', 'Pemahaman', 'Keahlian', 'Minat', 'Proses']
+): string => {
+  const groupHeaders = metricHeaders.map((h) => `<th colspan="2" class="th-group">${escapeHtml(h)}</th>`).join('');
+  const subHeaders = metricHeaders
+    .map(() => `<th class="th-sub">Angka</th><th class="th-sub">Huruf</th>`)
+    .join('');
+
+  const bodyRows = rows
+    .map(
+      (row) => `
+      <tr>
+        <td class="td-no">${row.no}.</td>
+        <td class="td-subject">${escapeHtml(row.subject)}</td>
+        <td class="td-kkm">${row.kkm}</td>
+        ${renderGradePairCells(row.pengetahuan)}
+        ${renderGradePairCells(row.pemahaman)}
+        ${renderGradePairCells(row.keahlian)}
+        ${renderGradePairCells(row.minat)}
+        ${renderGradePairCells(row.proses)}
+      </tr>`
+    )
+    .join('');
+
+  return `
+    <table class="report-table academic-table">
+      <thead>
+        <tr>
+          <th rowspan="2" class="th-no">No.</th>
+          <th rowspan="2" class="th-subject">Mata Pelajaran</th>
+          <th rowspan="2" class="th-kkm">KKM</th>
+          ${groupHeaders}
+        </tr>
+        <tr>
+          ${subHeaders}
+        </tr>
+      </thead>
+      <tbody>
+        ${bodyRows}
+      </tbody>
+    </table>`;
+};
+
+const renderTahfizhTableHtml = (rows: TahfizhReportRow[]): string => {
+  const bodyRows = rows
+    .map(
+      (row) => `
+      <tr>
+        <td class="td-no">${row.no}.</td>
+        <td class="td-subject">${escapeHtml(row.subject)}</td>
+        <td class="td-kkm">${row.kkm}</td>
+        <td class="td-text">${escapeHtml(row.setoran || '')}</td>
+        <td class="td-text">${escapeHtml(row.mutqin || '')}</td>
+        ${renderGradePairCells(row.kualitas)}
+        ${renderGradePairCells(row.kecepatan)}
+        ${renderGradePairCells(row.minat)}
+        ${renderGradePairCells(row.proses)}
+      </tr>`
+    )
+    .join('');
+
+  return `
+    <table class="report-table academic-table">
+      <thead>
+        <tr>
+          <th rowspan="2" class="th-no">No.</th>
+          <th rowspan="2" class="th-subject">Mata Pelajaran</th>
+          <th rowspan="2" class="th-kkm">KKM</th>
+          <th colspan="2" class="th-group">Kuantitas</th>
+          <th colspan="2" class="th-group">Kualitas</th>
+          <th colspan="2" class="th-group">Kecepatan</th>
+          <th colspan="2" class="th-group">Minat</th>
+          <th colspan="2" class="th-group">Proses</th>
+        </tr>
+        <tr>
+          <th class="th-sub">Setoran</th>
+          <th class="th-sub">Mutqin</th>
+          <th class="th-sub">Angka</th>
+          <th class="th-sub">Huruf</th>
+          <th class="th-sub">Angka</th>
+          <th class="th-sub">Huruf</th>
+          <th class="th-sub">Angka</th>
+          <th class="th-sub">Huruf</th>
+          <th class="th-sub">Angka</th>
+          <th class="th-sub">Huruf</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${bodyRows}
+      </tbody>
+    </table>`;
+};
+
+const renderTahsinTableHtml = (rows: TahsinReportRow[]): string => {
+  const bodyRows = rows
+    .map(
+      (row) => `
+      <tr>
+        <td class="td-no">${row.no}.</td>
+        <td class="td-subject">${escapeHtml(row.subject)}</td>
+        <td class="td-kkm">${row.kkm}</td>
+        <td class="td-text">${escapeHtml(row.capaian || '')}</td>
+        ${renderGradePairCells(row.fashohah)}
+        ${renderGradePairCells(row.tartil)}
+        ${renderGradePairCells(row.minat)}
+        ${renderGradePairCells(row.proses)}
+      </tr>`
+    )
+    .join('');
+
+  return `
+    <table class="report-table tahsin-table">
+      <thead>
+        <tr>
+          <th rowspan="2" class="th-no">No.</th>
+          <th rowspan="2" class="th-subject">Mata Pelajaran</th>
+          <th rowspan="2" class="th-kkm">KKM</th>
+          <th rowspan="2" class="th-capaian">Capaian</th>
+          <th colspan="2" class="th-group">Fashohah</th>
+          <th colspan="2" class="th-group">Tartil</th>
+          <th colspan="2" class="th-group">Minat</th>
+          <th colspan="2" class="th-group">Proses</th>
+        </tr>
+        <tr>
+          <th class="th-sub">Angka</th>
+          <th class="th-sub">Huruf</th>
+          <th class="th-sub">Angka</th>
+          <th class="th-sub">Huruf</th>
+          <th class="th-sub">Angka</th>
+          <th class="th-sub">Huruf</th>
+          <th class="th-sub">Angka</th>
+          <th class="th-sub">Huruf</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${bodyRows}
+      </tbody>
+    </table>`;
+};
+
+const renderExtracurricularTableHtml = (rows: ExtracurricularReportRow[]): string => {
+  const bodyRows = rows
+    .map(
+      (row) => `
+      <tr>
+        <td class="td-no">${row.no}.</td>
+        <td class="td-subject">${escapeHtml(row.subject)}</td>
+        <td class="td-kkm">${row.kkm}</td>
+        ${renderGradePairCells(row.minat)}
+        ${renderGradePairCells(row.kesungguhan)}
+        ${renderGradePairCells(row.kreativitas)}
+      </tr>`
+    )
+    .join('');
+
+  return `
+    <table class="report-table ekskul-table">
+      <thead>
+        <tr>
+          <th rowspan="2" class="th-no">No.</th>
+          <th rowspan="2" class="th-subject">Mata Pelajaran</th>
+          <th rowspan="2" class="th-kkm">KKM</th>
+          <th colspan="2" class="th-group">Minat</th>
+          <th colspan="2" class="th-group">Kesungguhan</th>
+          <th colspan="2" class="th-group">Kreativitas/Inovasi</th>
+        </tr>
+        <tr>
+          <th class="th-sub">Angka</th>
+          <th class="th-sub">Huruf</th>
+          <th class="th-sub">Angka</th>
+          <th class="th-sub">Huruf</th>
+          <th class="th-sub">Angka</th>
+          <th class="th-sub">Huruf</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${bodyRows}
+      </tbody>
+    </table>`;
+};
+
+const renderSikapPerilakuTableHtml = (titleHeader: string, items: ReportItem[]): string => {
   const rowsHtml = items
     .map(
       (item) => `
         <tr>
           <td class="td-no">${item.no}.</td>
           <td class="td-item">${escapeHtml(item.label)}</td>
-          <td class="td-score">${item.score !== null && item.score !== undefined ? escapeHtml(item.score) : '-'}</td>
+          <td class="td-score">${escapeHtml(formatScore(item.score))}</td>
           <td class="td-letter">${escapeHtml(item.letter || '-')}</td>
         </tr>`
     )
     .join('');
 
   return `
-    <table class="report-table">
+    <table class="report-table sikap-table">
       <thead>
         <tr>
           <th rowspan="2" class="th-no">No.</th>
@@ -37,8 +233,8 @@ const renderTableHtml = (titleHeader: string, items: ReportItem[]): string => {
           <th colspan="2" class="th-grade">Penilaian</th>
         </tr>
         <tr>
-          <th class="th-sub">Angka</th>
-          <th class="th-sub">Huruf</th>
+          <th class="th-sub-sm">Angka</th>
+          <th class="th-sub-sm">Huruf</th>
         </tr>
       </thead>
       <tbody>
@@ -47,9 +243,21 @@ const renderTableHtml = (titleHeader: string, items: ReportItem[]): string => {
     </table>`;
 };
 
+const renderCheckbox = (checked: boolean): string =>
+  checked
+    ? '<span class="chk chk-checked">&#9745;</span>'
+    : '<span class="chk">&#9744;</span>';
+
 const renderReportPage = (report: ReportStudent): string => {
   const displayClassSemester = `${escapeHtml(report.className)}/${escapeHtml(report.semester)}`;
   const displayDateAndPlace = report.dateAndPlace || formatReportDate();
+
+  const sakitText = report.ketidakhadiran.sakit !== null ? String(report.ketidakhadiran.sakit) : '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;';
+  const izinText = report.ketidakhadiran.izin !== null ? String(report.ketidakhadiran.izin) : '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;';
+  const alphaText =
+    report.ketidakhadiran.tanpaKeterangan !== null
+      ? String(report.ketidakhadiran.tanpaKeterangan)
+      : '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;';
 
   return `
     <article class="report-page">
@@ -78,41 +286,129 @@ const renderReportPage = (report: ReportStudent): string => {
         </div>
       </header>
 
-      <div class="title-section">
-        <h2>${escapeHtml(report.title || 'SIKAP DAN PERILAKU SISWA')}</h2>
+      <section class="section-block">
+        <h3 class="section-title">A. PENILAIAN MATA PELAJARAN</h3>
+        <div class="sub-table">${renderTahfizhTableHtml(report.tahfizhRows)}</div>
+        <div class="sub-table">${renderTahsinTableHtml(report.tahsinRows)}</div>
+        <div class="sub-table">${renderStandardSubjectTableHtml(report.mapelUmumRows)}</div>
+      </section>
+
+      <section class="section-block">
+        <h3 class="section-title">B. PENILAIAN MATA PELAJARAN INTI</h3>
+        ${renderStandardSubjectTableHtml(report.mapelIntiRows)}
+      </section>
+
+      <section class="section-block">
+        <h3 class="section-title">C. PENILAIAN MATA PELAJARAN PENUNJANG</h3>
+        ${renderStandardSubjectTableHtml(report.mapelPenunjangRows)}
+      </section>
+
+      <section class="section-block">
+        <h3 class="section-title">D. PENILAIAN EKSTRAKURIKULER</h3>
+        ${renderExtracurricularTableHtml(report.ekstrakurikulerRows)}
+      </section>
+
+      <section class="section-block">
+        <h3 class="section-title">E. SIKAP DAN PERILAKU SISWA</h3>
+        ${renderSikapPerilakuTableHtml('Sikap', report.sikapItems)}
+      </section>
+    </article>
+
+    <article class="report-page report-page-second">
+      <div class="page-two-content">
+        <section class="section-block">
+          ${renderSikapPerilakuTableHtml('Perilaku / AL BIAH KU', report.perilakuItems)}
+        </section>
+
+        <section class="section-block">
+          <h3 class="section-title">F. TARAF BERPIKIR</h3>
+          <table class="report-table berpikir-table">
+            <thead>
+              <tr>
+                <th>Pola Pikir</th>
+                <th>Berpikir Benar</th>
+                <th>Berpikir Solutif</th>
+                <th>Berpikir Cepat</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="td-center">${renderCheckbox(report.tarafBerpikir.polaPikir)}</td>
+                <td class="td-center">${renderCheckbox(report.tarafBerpikir.berpikirBenar)}</td>
+                <td class="td-center">${renderCheckbox(report.tarafBerpikir.berpikirSolutif)}</td>
+                <td class="td-center">${renderCheckbox(report.tarafBerpikir.berpikirCepat)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="section-block">
+          <h3 class="section-title">G. KETIDAKHADIRAN</h3>
+          <table class="report-table absen-table">
+            <tbody>
+              <tr>
+                <td class="td-absen-label">Ketidakhadiran</td>
+                <td class="td-absen-detail">
+                  <div>1. Sakit = ${sakitText} hari</div>
+                  <div>2. Izin = ${izinText} hari</div>
+                  <div>3. Tanpa Keterangan = ${alphaText} hari</div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="section-block">
+          <h3 class="section-title">H. KESIMPULAN</h3>
+          <table class="report-table kesimpulan-table">
+            <thead>
+              <tr>
+                <th class="th-half">Proses</th>
+                <th class="th-half">Output</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="td-kesimpulan-val">${escapeHtml(report.kesimpulan.proses || '') || '&nbsp;'}</td>
+                <td class="td-kesimpulan-val">${escapeHtml(report.kesimpulan.output || '') || '&nbsp;'}</td>
+              </tr>
+              <tr>
+                <td colspan="2" class="td-catatan">
+                  <div class="catatan-label">Catatan untuk diperhatikan orang tua/wali:</div>
+                  <div class="catatan-body">${escapeHtml(report.kesimpulan.catatan || '') || '&nbsp;'}</div>
+                </td>
+              </tr>
+              <tr>
+                <td colspan="2" class="td-kenaikan">
+                  <strong>Keterangan kenaikan kelas:</strong> ${escapeHtml(report.kesimpulan.kenaikanKelas || '')}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <footer class="footer-container">
+          <div class="date-line">${escapeHtml(displayDateAndPlace)}</div>
+          <div class="signatures-grid">
+            <div class="sig-col">
+              <div class="sig-role sig-role-offset">Orang Tua / Wali Siswa</div>
+              <div class="sig-space"></div>
+              <div class="sig-name">(……………………………)</div>
+            </div>
+            <div class="sig-col">
+              <div class="sig-mengetahui">Mengetahui</div>
+              <div class="sig-role">Kepala Sekolah,</div>
+              <div class="sig-space"></div>
+              <div class="sig-name">(……………………………)</div>
+            </div>
+            <div class="sig-col">
+              <div class="sig-role sig-role-offset">Wali Kelas,</div>
+              <div class="sig-space"></div>
+              <div class="sig-name">(……………………………)</div>
+            </div>
+          </div>
+        </footer>
       </div>
-
-      <div class="tables-section">
-        <div class="table-block">
-          ${renderTableHtml('Sikap', report.sikapItems)}
-        </div>
-
-        <div class="table-block table-block-second">
-          ${renderTableHtml('Perilaku / AL BIAH KU', report.perilakuItems)}
-        </div>
-      </div>
-
-      <footer class="footer-container">
-        <div class="date-line">${escapeHtml(displayDateAndPlace)}</div>
-        <div class="mengetahui-line">Mengetahui</div>
-        <div class="signatures-grid">
-          <div class="sig-col">
-            <div class="sig-role">Orang Tua / Wali Siswa</div>
-            <div class="sig-space"></div>
-            <div class="sig-name">(……………………………)</div>
-          </div>
-          <div class="sig-col">
-            <div class="sig-role">Kepala Sekolah,</div>
-            <div class="sig-space"></div>
-            <div class="sig-name">(……………………………)</div>
-          </div>
-          <div class="sig-col">
-            <div class="sig-role">Wali Kelas,</div>
-            <div class="sig-space"></div>
-            <div class="sig-name">(……………………………)</div>
-          </div>
-        </div>
-      </footer>
     </article>`;
 };
 
@@ -124,7 +420,7 @@ const createPrintableDocumentStart = (title: string): string => `<!doctype html>
       <style>
         @page {
           size: A4 portrait;
-          margin: 10mm 15mm;
+          margin: 9mm 13mm;
         }
         * {
           box-sizing: border-box;
@@ -132,21 +428,16 @@ const createPrintableDocumentStart = (title: string): string => `<!doctype html>
         body {
           margin: 0;
           color: #111827;
-          font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
-          font-size: 8.5pt;
-          line-height: 1.25;
+          font-family: "Times New Roman", Times, Georgia, serif;
+          font-size: 8pt;
+          line-height: 1.2;
           -webkit-print-color-adjust: exact;
           print-color-adjust: exact;
         }
         .report-page {
           width: 100%;
-          min-height: 270mm;
-          max-height: 277mm;
           break-after: page;
           page-break-after: always;
-          display: flex;
-          flex-direction: column;
-          justify-content: space-between;
         }
         .report-page:last-child {
           break-after: auto;
@@ -158,105 +449,167 @@ const createPrintableDocumentStart = (title: string): string => `<!doctype html>
         .header-grid {
           display: grid;
           grid-template-columns: 1fr 1fr;
-          column-gap: 24px;
-          row-gap: 4px;
+          column-gap: 20px;
+          row-gap: 2px;
           font-size: 8.5pt;
+          font-weight: 700;
         }
         .identity-item {
           display: flex;
           align-items: baseline;
         }
         .identity-item .label {
-          width: 110px;
+          width: 105px;
           flex-shrink: 0;
-          font-weight: 400;
         }
         .identity-item .colon {
-          width: 14px;
+          width: 12px;
           flex-shrink: 0;
         }
         .identity-item .val {
           flex: 1;
-          font-weight: 400;
         }
-        .title-section {
-          text-align: center;
-          margin: 4px 0 8px 0;
+        .section-block {
+          margin-bottom: 6px;
         }
-        .title-section h2 {
-          margin: 0;
-          font-size: 10pt;
+        .section-title {
+          margin: 0 0 3px 0;
+          font-size: 8pt;
           font-weight: 700;
-          letter-spacing: 0.5px;
+          letter-spacing: 0.2px;
         }
-        .tables-section {
-          flex: 1;
+        .sub-table {
+          margin-bottom: 5px;
         }
-        .table-block {
-          width: 100%;
-        }
-        .table-block-second {
-          margin-top: -1px;
+        .sub-table:last-child {
+          margin-bottom: 0;
         }
         table.report-table {
           width: 100%;
           border-collapse: collapse;
           table-layout: fixed;
-          font-size: 8pt;
+          font-size: 7.5pt;
         }
         table.report-table th,
         table.report-table td {
-          border: 1px solid #374151;
-          padding: 2.5px 4px;
+          border: 1px solid #1f2937;
+          padding: 1.5px 3px;
           vertical-align: middle;
         }
         table.report-table thead th {
-          background-color: #f1f5f9;
+          background-color: #f8fafc;
           font-weight: 700;
           text-align: center;
         }
         th.th-no {
-          width: 32px;
-          text-align: center;
+          width: 24px;
         }
-        th.th-item {
-          text-align: center;
+        th.th-subject {
+          width: 102px;
         }
-        th.th-grade {
-          width: 110px;
+        th.th-kkm {
+          width: 30px;
+        }
+        th.th-capaian {
+          width: 72px;
+        }
+        th.th-group {
           text-align: center;
         }
         th.th-sub {
-          width: 55px;
+          font-size: 7pt;
+        }
+        td.td-no,
+        td.td-kkm,
+        td.td-score,
+        td.td-letter,
+        td.td-text,
+        td.td-center {
           text-align: center;
         }
-        td.td-no {
-          text-align: center;
-          font-size: 8pt;
+        td.td-subject {
+          text-align: left;
+          padding-left: 4px;
+        }
+        table.ekskul-table {
+          width: 74%;
+        }
+        table.ekskul-table th.th-subject {
+          width: 105px;
+        }
+        table.sikap-table {
+          width: 42%;
+        }
+        table.sikap-table th.th-item {
+          width: auto;
+        }
+        table.sikap-table th.th-grade {
+          width: 76px;
+        }
+        table.sikap-table th.th-sub-sm {
+          width: 38px;
+          font-size: 7pt;
         }
         td.td-item {
           text-align: left;
-          padding-left: 6px;
+          padding-left: 4px;
         }
-        td.td-score {
-          text-align: center;
+        table.berpikir-table {
+          width: 68%;
         }
-        td.td-letter {
+        .chk {
+          font-size: 10pt;
+          line-height: 1;
+        }
+        table.absen-table {
+          width: 52%;
+        }
+        td.td-absen-label {
+          width: 38%;
+          text-align: left;
+          padding-left: 5px;
+          font-weight: 700;
+        }
+        td.td-absen-detail {
+          text-align: left;
+          padding: 3px 6px;
+          font-weight: 700;
+          line-height: 1.35;
+        }
+        table.kesimpulan-table th.th-half {
+          width: 50%;
+        }
+        td.td-kesimpulan-val {
           text-align: center;
+          font-weight: 700;
+          padding: 3px 4px;
+          min-height: 18px;
+        }
+        td.td-catatan {
+          text-align: left;
+          padding: 3px 5px;
+        }
+        .catatan-label {
+          font-weight: 700;
+          margin-bottom: 4px;
+        }
+        .catatan-body {
+          min-height: 14px;
+          font-weight: 700;
+        }
+        td.td-kenaikan {
+          text-align: left;
+          padding: 3px 5px;
         }
         .footer-container {
-          margin-top: 10px;
+          margin-top: 16px;
           font-size: 8.5pt;
         }
         .date-line {
           text-align: right;
-          margin-bottom: 4px;
-          padding-right: 15px;
-        }
-        .mengetahui-line {
-          text-align: center;
-          font-weight: 600;
-          margin-bottom: 6px;
+          font-weight: 700;
+          margin-bottom: 10px;
+          padding-right: 14px;
         }
         .signatures-grid {
           display: grid;
@@ -268,11 +621,17 @@ const createPrintableDocumentStart = (title: string): string => `<!doctype html>
           display: flex;
           flex-direction: column;
           align-items: center;
-          justify-content: space-between;
           min-height: 24mm;
         }
+        .sig-mengetahui {
+          font-weight: 700;
+          margin-bottom: 2px;
+        }
         .sig-role {
-          font-weight: 600;
+          font-weight: 700;
+        }
+        .sig-role-offset {
+          margin-top: 14px;
         }
         .sig-space {
           flex: 1;
@@ -291,7 +650,7 @@ const createPrintableDocumentStart = (title: string): string => `<!doctype html>
             width: 210mm;
             min-height: 297mm;
             margin: 0 auto 16px;
-            padding: 12mm 16mm;
+            padding: 10mm 14mm;
             background: white;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
           }
@@ -340,188 +699,467 @@ const worksheetName = (name: string, index: number, used: Set<string>): string =
 };
 
 const thinBorder = {
-  top: { style: 'thin' as const, color: { argb: 'FF374151' } },
-  left: { style: 'thin' as const, color: { argb: 'FF374151' } },
-  bottom: { style: 'thin' as const, color: { argb: 'FF374151' } },
-  right: { style: 'thin' as const, color: { argb: 'FF374151' } },
+  top: { style: 'thin' as const, color: { argb: 'FF1F2937' } },
+  left: { style: 'thin' as const, color: { argb: 'FF1F2937' } },
+  bottom: { style: 'thin' as const, color: { argb: 'FF1F2937' } },
+  right: { style: 'thin' as const, color: { argb: 'FF1F2937' } },
 };
 
-const styleTableCells = (row: ExcelJS.Row, colFrom: number, colTo: number) => {
+const styleTableCells = (row: ExcelJS.Row, colFrom: number, colTo: number, fillHeader = false) => {
   for (let c = colFrom; c <= colTo; c += 1) {
     const cell = row.getCell(c);
     cell.border = thinBorder;
+    cell.font = { name: 'Times New Roman', size: 9, bold: fillHeader };
+    if (fillHeader) {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+    }
   }
+};
+
+const setGradePairExcel = (row: ExcelJS.Row, colStart: number, pair: GradePair) => {
+  const cScore = row.getCell(colStart);
+  cScore.value = pair.score !== null && pair.score !== undefined ? pair.score : '';
+  cScore.alignment = { horizontal: 'center', vertical: 'middle' };
+  if (pair.score !== null && pair.score !== undefined) {
+    cScore.numFmt = '0';
+  }
+
+  const cLetter = row.getCell(colStart + 1);
+  cLetter.value = pair.letter || '';
+  cLetter.alignment = { horizontal: 'center', vertical: 'middle' };
 };
 
 const addStudentWorksheet = (workbook: ExcelJS.Workbook, report: ReportStudent, index: number, names: Set<string>) => {
   const sheet = workbook.addWorksheet(worksheetName(report.name, index, names));
 
-  // Columns: A: No (5), B: Sikap/Perilaku (45), C: Angka (11), D: Huruf (11)
+  // 13 columns (A..M)
   sheet.columns = [
-    { width: 6 },
-    { width: 48 },
-    { width: 12 },
-    { width: 12 },
+    { width: 5 }, // A: No.
+    { width: 24 }, // B: Mata Pelajaran / Sikap
+    { width: 6 }, // C: KKM
+    { width: 7.5 }, // D
+    { width: 7.5 }, // E
+    { width: 7.5 }, // F
+    { width: 7.5 }, // G
+    { width: 7.5 }, // H
+    { width: 7.5 }, // I
+    { width: 7.5 }, // J
+    { width: 7.5 }, // K
+    { width: 7.5 }, // L
+    { width: 7.5 }, // M
   ];
 
-  // 1. Header Identity
-  // Row 1
+  // Header Identity
   sheet.getCell('A1').value = 'Nama Siswa';
-  sheet.getCell('A1').font = { bold: false, size: 10 };
+  sheet.getCell('A1').font = { name: 'Times New Roman', bold: true, size: 10 };
+  sheet.mergeCells('B1:F1');
   sheet.getCell('B1').value = `: ${report.name}`;
-  sheet.getCell('B1').font = { size: 10 };
-  sheet.getCell('C1').value = 'Tahun Pelajaran';
-  sheet.getCell('C1').font = { bold: false, size: 10 };
-  sheet.getCell('D1').value = `: ${report.academicYear}`;
-  sheet.getCell('D1').font = { size: 10 };
+  sheet.getCell('B1').font = { name: 'Times New Roman', bold: true, size: 10 };
+  sheet.mergeCells('G1:I1');
+  sheet.getCell('G1').value = 'Tahun Pelajaran';
+  sheet.getCell('G1').font = { name: 'Times New Roman', bold: true, size: 10 };
+  sheet.mergeCells('J1:M1');
+  sheet.getCell('J1').value = `: ${report.academicYear}`;
+  sheet.getCell('J1').font = { name: 'Times New Roman', bold: true, size: 10 };
 
-  // Row 2
   sheet.getCell('A2').value = 'No. Induk Siswa';
-  sheet.getCell('A2').font = { bold: false, size: 10 };
+  sheet.getCell('A2').font = { name: 'Times New Roman', bold: true, size: 10 };
+  sheet.mergeCells('B2:F2');
   sheet.getCell('B2').value = `: ${report.identityNumber}`;
-  sheet.getCell('B2').font = { size: 10 };
-  sheet.getCell('C2').value = 'Kelas/Semester';
-  sheet.getCell('C2').font = { bold: false, size: 10 };
-  sheet.getCell('D2').value = `: ${report.className}/${report.semester}`;
-  sheet.getCell('D2').font = { size: 10 };
+  sheet.getCell('B2').font = { name: 'Times New Roman', bold: true, size: 10 };
+  sheet.mergeCells('G2:I2');
+  sheet.getCell('G2').value = 'Kelas/Semester';
+  sheet.getCell('G2').font = { name: 'Times New Roman', bold: true, size: 10 };
+  sheet.mergeCells('J2:M2');
+  sheet.getCell('J2').value = `: ${report.className}/${report.semester}`;
+  sheet.getCell('J2').font = { name: 'Times New Roman', bold: true, size: 10 };
 
-  // 2. Title: SIKAP DAN PERILAKU SISWA
-  sheet.mergeCells('A4:D4');
-  const titleCell = sheet.getCell('A4');
-  titleCell.value = report.title || 'SIKAP DAN PERILAKU SISWA';
-  titleCell.font = { bold: true, size: 11 };
-  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  let currentRow = 4;
 
-  let currentRow = 6;
+  const addSectionTitle = (title: string) => {
+    sheet.mergeCells(`A${currentRow}:M${currentRow}`);
+    const cell = sheet.getCell(`A${currentRow}`);
+    cell.value = title;
+    cell.font = { name: 'Times New Roman', bold: true, size: 9.5 };
+    currentRow += 1;
+  };
 
-  // Helper to render a table in Excel
-  const renderTableExcel = (headerTitle: string, items: ReportItem[]) => {
-    // Header Row 1
+  const renderStandardAcademicExcel = (rows: AcademicSubjectReportRow[]) => {
+    const groups = ['Pengetahuan', 'Pemahaman', 'Keahlian', 'Minat', 'Proses'];
     sheet.mergeCells(`A${currentRow}:A${currentRow + 1}`);
     sheet.mergeCells(`B${currentRow}:B${currentRow + 1}`);
-    sheet.mergeCells(`C${currentRow}:D${currentRow}`);
+    sheet.mergeCells(`C${currentRow}:C${currentRow + 1}`);
 
-    const cellNo = sheet.getCell(`A${currentRow}`);
-    cellNo.value = 'No.';
-    cellNo.alignment = { horizontal: 'center', vertical: 'middle' };
-    cellNo.font = { bold: true };
+    sheet.getCell(`A${currentRow}`).value = 'No.';
+    sheet.getCell(`B${currentRow}`).value = 'Mata Pelajaran';
+    sheet.getCell(`C${currentRow}`).value = 'KKM';
 
-    const cellTitle = sheet.getCell(`B${currentRow}`);
-    cellTitle.value = headerTitle;
-    cellTitle.alignment = { horizontal: 'center', vertical: 'middle' };
-    cellTitle.font = { bold: true };
-
-    const cellGrade = sheet.getCell(`C${currentRow}`);
-    cellGrade.value = 'Penilaian';
-    cellGrade.alignment = { horizontal: 'center', vertical: 'middle' };
-    cellGrade.font = { bold: true };
-
-    // Header Row 2
-    const cellAngka = sheet.getCell(`C${currentRow + 1}`);
-    cellAngka.value = 'Angka';
-    cellAngka.alignment = { horizontal: 'center', vertical: 'middle' };
-    cellAngka.font = { bold: true };
-
-    const cellHuruf = sheet.getCell(`D${currentRow + 1}`);
-    cellHuruf.value = 'Huruf';
-    cellHuruf.alignment = { horizontal: 'center', vertical: 'middle' };
-    cellHuruf.font = { bold: true };
-
-    // Style headers
-    [currentRow, currentRow + 1].forEach((rNum) => {
-      const r = sheet.getRow(rNum);
-      styleTableCells(r, 1, 4);
-      for (let c = 1; c <= 4; c += 1) {
-        r.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
-      }
+    groups.forEach((g, idx) => {
+      const col1 = 4 + idx * 2;
+      sheet.mergeCells(currentRow, col1, currentRow, col1 + 1);
+      sheet.getCell(currentRow, col1).value = g;
+      sheet.getCell(currentRow + 1, col1).value = 'Angka';
+      sheet.getCell(currentRow + 1, col1 + 1).value = 'Huruf';
     });
 
+    [currentRow, currentRow + 1].forEach((rNum) => {
+      const r = sheet.getRow(rNum);
+      styleTableCells(r, 1, 13, true);
+      for (let c = 1; c <= 13; c += 1) {
+        r.getCell(c).alignment = { horizontal: 'center', vertical: 'middle' };
+      }
+    });
     currentRow += 2;
 
-    // Data rows
-    items.forEach((item) => {
+    rows.forEach((item) => {
       const r = sheet.getRow(currentRow);
       r.getCell(1).value = `${item.no}.`;
       r.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
-
-      r.getCell(2).value = item.label;
+      r.getCell(2).value = item.subject;
       r.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
-
-      r.getCell(3).value = item.score !== null && item.score !== undefined ? item.score : '-';
+      r.getCell(3).value = item.kkm;
       r.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
-      if (item.score !== null && item.score !== undefined) {
-        r.getCell(3).numFmt = '0';
-      }
-
-      r.getCell(4).value = item.letter || '-';
-      r.getCell(4).alignment = { horizontal: 'center', vertical: 'middle' };
-
-      styleTableCells(r, 1, 4);
+      setGradePairExcel(r, 4, item.pengetahuan);
+      setGradePairExcel(r, 6, item.pemahaman);
+      setGradePairExcel(r, 8, item.keahlian);
+      setGradePairExcel(r, 10, item.minat);
+      setGradePairExcel(r, 12, item.proses);
+      styleTableCells(r, 1, 13);
       currentRow += 1;
     });
   };
 
-  // Table 1: Sikap
-  renderTableExcel('Sikap', report.sikapItems);
+  // A. PENILAIAN MATA PELAJARAN
+  addSectionTitle('A. PENILAIAN MATA PELAJARAN');
 
-  // Table 2: Perilaku / AL BIAH KU (directly attached without gap, as in the user's template)
-  renderTableExcel('Perilaku / AL BIAH KU', report.perilakuItems);
+  // A1: Tahfizhul Qur'an
+  sheet.mergeCells(`A${currentRow}:A${currentRow + 1}`);
+  sheet.mergeCells(`B${currentRow}:B${currentRow + 1}`);
+  sheet.mergeCells(`C${currentRow}:C${currentRow + 1}`);
+  sheet.getCell(`A${currentRow}`).value = 'No.';
+  sheet.getCell(`B${currentRow}`).value = 'Mata Pelajaran';
+  sheet.getCell(`C${currentRow}`).value = 'KKM';
+  const tahfizhGroups = [
+    { name: 'Kuantitas', sub1: 'Setoran', sub2: 'Mutqin' },
+    { name: 'Kualitas', sub1: 'Angka', sub2: 'Huruf' },
+    { name: 'Kecepatan', sub1: 'Angka', sub2: 'Huruf' },
+    { name: 'Minat', sub1: 'Angka', sub2: 'Huruf' },
+    { name: 'Proses', sub1: 'Angka', sub2: 'Huruf' },
+  ];
+  tahfizhGroups.forEach((g, idx) => {
+    const col1 = 4 + idx * 2;
+    sheet.mergeCells(currentRow, col1, currentRow, col1 + 1);
+    sheet.getCell(currentRow, col1).value = g.name;
+    sheet.getCell(currentRow + 1, col1).value = g.sub1;
+    sheet.getCell(currentRow + 1, col1 + 1).value = g.sub2;
+  });
+  [currentRow, currentRow + 1].forEach((rNum) => {
+    const r = sheet.getRow(rNum);
+    styleTableCells(r, 1, 13, true);
+    for (let c = 1; c <= 13; c += 1) {
+      r.getCell(c).alignment = { horizontal: 'center', vertical: 'middle' };
+    }
+  });
+  currentRow += 2;
 
+  report.tahfizhRows.forEach((item) => {
+    const r = sheet.getRow(currentRow);
+    r.getCell(1).value = `${item.no}.`;
+    r.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+    r.getCell(2).value = item.subject;
+    r.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
+    r.getCell(3).value = item.kkm;
+    r.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
+    r.getCell(4).value = item.setoran || '';
+    r.getCell(4).alignment = { horizontal: 'center', vertical: 'middle' };
+    r.getCell(5).value = item.mutqin || '';
+    r.getCell(5).alignment = { horizontal: 'center', vertical: 'middle' };
+    setGradePairExcel(r, 6, item.kualitas);
+    setGradePairExcel(r, 8, item.kecepatan);
+    setGradePairExcel(r, 10, item.minat);
+    setGradePairExcel(r, 12, item.proses);
+    styleTableCells(r, 1, 13);
+    currentRow += 1;
+  });
   currentRow += 1;
 
-  // 3. Footer / Signatures
-  // Place & Date
-  sheet.mergeCells(`C${currentRow}:D${currentRow}`);
-  const dateCell = sheet.getCell(`C${currentRow}`);
+  // A2: Tahsinul Qur'an
+  sheet.mergeCells(`A${currentRow}:A${currentRow + 1}`);
+  sheet.mergeCells(`B${currentRow}:B${currentRow + 1}`);
+  sheet.mergeCells(`C${currentRow}:C${currentRow + 1}`);
+  sheet.mergeCells(`D${currentRow}:E${currentRow + 1}`);
+  sheet.getCell(`A${currentRow}`).value = 'No.';
+  sheet.getCell(`B${currentRow}`).value = 'Mata Pelajaran';
+  sheet.getCell(`C${currentRow}`).value = 'KKM';
+  sheet.getCell(`D${currentRow}`).value = 'Capaian';
+  ['Fashohah', 'Tartil', 'Minat', 'Proses'].forEach((g, idx) => {
+    const col1 = 6 + idx * 2;
+    sheet.mergeCells(currentRow, col1, currentRow, col1 + 1);
+    sheet.getCell(currentRow, col1).value = g;
+    sheet.getCell(currentRow + 1, col1).value = 'Angka';
+    sheet.getCell(currentRow + 1, col1 + 1).value = 'Huruf';
+  });
+  [currentRow, currentRow + 1].forEach((rNum) => {
+    const r = sheet.getRow(rNum);
+    styleTableCells(r, 1, 13, true);
+    for (let c = 1; c <= 13; c += 1) {
+      r.getCell(c).alignment = { horizontal: 'center', vertical: 'middle' };
+    }
+  });
+  currentRow += 2;
+
+  report.tahsinRows.forEach((item) => {
+    sheet.mergeCells(`D${currentRow}:E${currentRow}`);
+    const r = sheet.getRow(currentRow);
+    r.getCell(1).value = `${item.no}.`;
+    r.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+    r.getCell(2).value = item.subject;
+    r.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
+    r.getCell(3).value = item.kkm;
+    r.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
+    r.getCell(4).value = item.capaian || '';
+    r.getCell(4).alignment = { horizontal: 'center', vertical: 'middle' };
+    setGradePairExcel(r, 6, item.fashohah);
+    setGradePairExcel(r, 8, item.tartil);
+    setGradePairExcel(r, 10, item.minat);
+    setGradePairExcel(r, 12, item.proses);
+    styleTableCells(r, 1, 13);
+    currentRow += 1;
+  });
+  currentRow += 1;
+
+  // A3: Bahasa Arab & Bahasa Indonesia
+  renderStandardAcademicExcel(report.mapelUmumRows);
+  currentRow += 1;
+
+  // B. PENILAIAN MATA PELAJARAN INTI
+  addSectionTitle('B. PENILAIAN MATA PELAJARAN INTI');
+  renderStandardAcademicExcel(report.mapelIntiRows);
+  currentRow += 1;
+
+  // C. PENILAIAN MATA PELAJARAN PENUNJANG
+  addSectionTitle('C. PENILAIAN MATA PELAJARAN PENUNJANG');
+  renderStandardAcademicExcel(report.mapelPenunjangRows);
+  currentRow += 1;
+
+  // D. PENILAIAN EKSTRAKURIKULER
+  addSectionTitle('D. PENILAIAN EKSTRAKURIKULER');
+  sheet.mergeCells(`A${currentRow}:A${currentRow + 1}`);
+  sheet.mergeCells(`B${currentRow}:B${currentRow + 1}`);
+  sheet.mergeCells(`C${currentRow}:C${currentRow + 1}`);
+  sheet.getCell(`A${currentRow}`).value = 'No.';
+  sheet.getCell(`B${currentRow}`).value = 'Mata Pelajaran';
+  sheet.getCell(`C${currentRow}`).value = 'KKM';
+  ['Minat', 'Kesungguhan', 'Kreativitas/Inovasi'].forEach((g, idx) => {
+    const col1 = 4 + idx * 2;
+    sheet.mergeCells(currentRow, col1, currentRow, col1 + 1);
+    sheet.getCell(currentRow, col1).value = g;
+    sheet.getCell(currentRow + 1, col1).value = 'Angka';
+    sheet.getCell(currentRow + 1, col1 + 1).value = 'Huruf';
+  });
+  [currentRow, currentRow + 1].forEach((rNum) => {
+    const r = sheet.getRow(rNum);
+    styleTableCells(r, 1, 9, true);
+    for (let c = 1; c <= 9; c += 1) {
+      r.getCell(c).alignment = { horizontal: 'center', vertical: 'middle' };
+    }
+  });
+  currentRow += 2;
+
+  report.ekstrakurikulerRows.forEach((item) => {
+    const r = sheet.getRow(currentRow);
+    r.getCell(1).value = `${item.no}.`;
+    r.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+    r.getCell(2).value = item.subject;
+    r.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
+    r.getCell(3).value = item.kkm;
+    r.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
+    setGradePairExcel(r, 4, item.minat);
+    setGradePairExcel(r, 6, item.kesungguhan);
+    setGradePairExcel(r, 8, item.kreativitas);
+    styleTableCells(r, 1, 9);
+    currentRow += 1;
+  });
+  currentRow += 1;
+
+  // E. SIKAP DAN PERILAKU SISWA
+  addSectionTitle('E. SIKAP DAN PERILAKU SISWA');
+
+  const renderSikapTableExcel = (headerTitle: string, items: ReportItem[]) => {
+    sheet.mergeCells(`A${currentRow}:A${currentRow + 1}`);
+    sheet.mergeCells(`B${currentRow}:C${currentRow + 1}`);
+    sheet.mergeCells(`D${currentRow}:E${currentRow}`);
+
+    sheet.getCell(`A${currentRow}`).value = 'No.';
+    sheet.getCell(`B${currentRow}`).value = headerTitle;
+    sheet.getCell(`D${currentRow}`).value = 'Penilaian';
+    sheet.getCell(`D${currentRow + 1}`).value = 'Angka';
+    sheet.getCell(`E${currentRow + 1}`).value = 'Huruf';
+
+    [currentRow, currentRow + 1].forEach((rNum) => {
+      const r = sheet.getRow(rNum);
+      styleTableCells(r, 1, 5, true);
+      for (let c = 1; c <= 5; c += 1) {
+        r.getCell(c).alignment = { horizontal: 'center', vertical: 'middle' };
+      }
+    });
+    currentRow += 2;
+
+    items.forEach((item) => {
+      sheet.mergeCells(`B${currentRow}:C${currentRow}`);
+      const r = sheet.getRow(currentRow);
+      r.getCell(1).value = `${item.no}.`;
+      r.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+      r.getCell(2).value = item.label;
+      r.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
+      r.getCell(4).value = item.score !== null && item.score !== undefined ? item.score : '-';
+      r.getCell(4).alignment = { horizontal: 'center', vertical: 'middle' };
+      if (item.score !== null && item.score !== undefined) {
+        r.getCell(4).numFmt = '0';
+      }
+      r.getCell(5).value = item.letter || '-';
+      r.getCell(5).alignment = { horizontal: 'center', vertical: 'middle' };
+      styleTableCells(r, 1, 5);
+      currentRow += 1;
+    });
+  };
+
+  renderSikapTableExcel('Sikap', report.sikapItems);
+  currentRow += 1;
+  renderSikapTableExcel('Perilaku / AL BIAH KU', report.perilakuItems);
+  currentRow += 1;
+
+  // F. TARAF BERPIKIR
+  addSectionTitle('F. TARAF BERPIKIR');
+  const berpikirCols = [
+    { label: 'Pola Pikir', checked: report.tarafBerpikir.polaPikir },
+    { label: 'Berpikir Benar', checked: report.tarafBerpikir.berpikirBenar },
+    { label: 'Berpikir Solutif', checked: report.tarafBerpikir.berpikirSolutif },
+    { label: 'Berpikir Cepat', checked: report.tarafBerpikir.berpikirCepat },
+  ];
+  berpikirCols.forEach((col, idx) => {
+    const c1 = 1 + idx * 2;
+    sheet.mergeCells(currentRow, c1, currentRow, c1 + 1);
+    sheet.getCell(currentRow, c1).value = col.label;
+    sheet.getCell(currentRow, c1).alignment = { horizontal: 'center', vertical: 'middle' };
+    sheet.mergeCells(currentRow + 1, c1, currentRow + 1, c1 + 1);
+    sheet.getCell(currentRow + 1, c1).value = col.checked ? '☑' : '☐';
+    sheet.getCell(currentRow + 1, c1).alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+  styleTableCells(sheet.getRow(currentRow), 1, 8, true);
+  styleTableCells(sheet.getRow(currentRow + 1), 1, 8, false);
+  currentRow += 3;
+
+  // G. KETIDAKHADIRAN
+  addSectionTitle('G. KETIDAKHADIRAN');
+  sheet.mergeCells(`A${currentRow}:B${currentRow + 2}`);
+  sheet.getCell(`A${currentRow}`).value = 'Ketidakhadiran';
+  sheet.getCell(`A${currentRow}`).alignment = { horizontal: 'left', vertical: 'middle' };
+  const absenLines = [
+    `1. Sakit = ${report.ketidakhadiran.sakit ?? '    '} hari`,
+    `2. Izin = ${report.ketidakhadiran.izin ?? '    '} hari`,
+    `3. Tanpa Keterangan = ${report.ketidakhadiran.tanpaKeterangan ?? '    '} hari`,
+  ];
+  absenLines.forEach((line, idx) => {
+    sheet.mergeCells(`C${currentRow + idx}:G${currentRow + idx}`);
+    sheet.getCell(`C${currentRow + idx}`).value = line;
+    sheet.getCell(`C${currentRow + idx}`).alignment = { horizontal: 'left', vertical: 'middle' };
+    styleTableCells(sheet.getRow(currentRow + idx), 1, 7, false);
+    sheet.getRow(currentRow + idx).getCell(1).font = { name: 'Times New Roman', size: 9, bold: true };
+    sheet.getRow(currentRow + idx).getCell(3).font = { name: 'Times New Roman', size: 9, bold: true };
+  });
+  currentRow += 4;
+
+  // H. KESIMPULAN
+  addSectionTitle('H. KESIMPULAN');
+  sheet.mergeCells(`A${currentRow}:F${currentRow}`);
+  sheet.mergeCells(`G${currentRow}:M${currentRow}`);
+  sheet.getCell(`A${currentRow}`).value = 'Proses';
+  sheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getCell(`G${currentRow}`).value = 'Output';
+  sheet.getCell(`G${currentRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+  styleTableCells(sheet.getRow(currentRow), 1, 13, true);
+  currentRow += 1;
+
+  sheet.mergeCells(`A${currentRow}:F${currentRow}`);
+  sheet.mergeCells(`G${currentRow}:M${currentRow}`);
+  sheet.getCell(`A${currentRow}`).value = report.kesimpulan.proses || '';
+  sheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getCell(`G${currentRow}`).value = report.kesimpulan.output || '';
+  sheet.getCell(`G${currentRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+  styleTableCells(sheet.getRow(currentRow), 1, 13, false);
+  sheet.getRow(currentRow).getCell(1).font = { name: 'Times New Roman', size: 9, bold: true };
+  sheet.getRow(currentRow).getCell(7).font = { name: 'Times New Roman', size: 9, bold: true };
+  currentRow += 1;
+
+  sheet.mergeCells(`A${currentRow}:M${currentRow}`);
+  sheet.getCell(`A${currentRow}`).value = `Catatan untuk diperhatikan orang tua/wali:\n${report.kesimpulan.catatan || ''}`;
+  sheet.getCell(`A${currentRow}`).alignment = { horizontal: 'left', vertical: 'top', wrapText: true };
+  sheet.getRow(currentRow).height = 30;
+  styleTableCells(sheet.getRow(currentRow), 1, 13, false);
+  sheet.getRow(currentRow).getCell(1).font = { name: 'Times New Roman', size: 9, bold: true };
+  currentRow += 1;
+
+  sheet.mergeCells(`A${currentRow}:M${currentRow}`);
+  sheet.getCell(`A${currentRow}`).value = `Keterangan kenaikan kelas: ${report.kesimpulan.kenaikanKelas || ''}`;
+  sheet.getCell(`A${currentRow}`).alignment = { horizontal: 'left', vertical: 'middle' };
+  styleTableCells(sheet.getRow(currentRow), 1, 13, false);
+  sheet.getRow(currentRow).getCell(1).font = { name: 'Times New Roman', size: 9, bold: true };
+  currentRow += 2;
+
+  // Footer / Signatures
+  sheet.mergeCells(`J${currentRow}:M${currentRow}`);
+  const dateCell = sheet.getCell(`J${currentRow}`);
   dateCell.value = report.dateAndPlace || formatReportDate();
+  dateCell.font = { name: 'Times New Roman', bold: true, size: 9.5 };
   dateCell.alignment = { horizontal: 'right', vertical: 'middle' };
   currentRow += 1;
 
-  // Mengetahui
-  sheet.mergeCells(`A${currentRow}:D${currentRow}`);
-  const mengetCell = sheet.getCell(`A${currentRow}`);
+  sheet.mergeCells(`E${currentRow}:I${currentRow}`);
+  const mengetCell = sheet.getCell(`E${currentRow}`);
   mengetCell.value = 'Mengetahui';
-  mengetCell.font = { bold: true };
+  mengetCell.font = { name: 'Times New Roman', bold: true, size: 9.5 };
   mengetCell.alignment = { horizontal: 'center', vertical: 'middle' };
   currentRow += 1;
 
-  // Signer roles
   const sigRow = currentRow;
+  sheet.mergeCells(`A${sigRow}:D${sigRow}`);
   sheet.getCell(`A${sigRow}`).value = 'Orang Tua / Wali Siswa';
-  sheet.getCell(`A${sigRow}`).font = { bold: true };
+  sheet.getCell(`A${sigRow}`).font = { name: 'Times New Roman', bold: true, size: 9.5 };
   sheet.getCell(`A${sigRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
 
-  sheet.mergeCells(`B${sigRow}:C${sigRow}`);
-  sheet.getCell(`B${sigRow}`).value = 'Kepala Sekolah,';
-  sheet.getCell(`B${sigRow}`).font = { bold: true };
-  sheet.getCell(`B${sigRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.mergeCells(`E${sigRow}:I${sigRow}`);
+  sheet.getCell(`E${sigRow}`).value = 'Kepala Sekolah,';
+  sheet.getCell(`E${sigRow}`).font = { name: 'Times New Roman', bold: true, size: 9.5 };
+  sheet.getCell(`E${sigRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
 
-  sheet.getCell(`D${sigRow}`).value = 'Wali Kelas,';
-  sheet.getCell(`D${sigRow}`).font = { bold: true };
-  sheet.getCell(`D${sigRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.mergeCells(`J${sigRow}:M${sigRow}`);
+  sheet.getCell(`J${sigRow}`).value = 'Wali Kelas,';
+  sheet.getCell(`J${sigRow}`).font = { name: 'Times New Roman', bold: true, size: 9.5 };
+  sheet.getCell(`J${sigRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
 
   currentRow += 4;
 
-  // Signer dotted line / names
   const nameRow = currentRow;
+  sheet.mergeCells(`A${nameRow}:D${nameRow}`);
   sheet.getCell(`A${nameRow}`).value = '(……………………………)';
   sheet.getCell(`A${nameRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
 
-  sheet.mergeCells(`B${nameRow}:C${nameRow}`);
-  sheet.getCell(`B${nameRow}`).value = '(……………………………)';
-  sheet.getCell(`B${nameRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.mergeCells(`E${nameRow}:I${nameRow}`);
+  sheet.getCell(`E${nameRow}`).value = '(……………………………)';
+  sheet.getCell(`E${nameRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
 
-  sheet.getCell(`D${nameRow}`).value = '(……………………………)';
-  sheet.getCell(`D${nameRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.mergeCells(`J${nameRow}:M${nameRow}`);
+  sheet.getCell(`J${nameRow}`).value = '(……………………………)';
+  sheet.getCell(`J${nameRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
 
-  // Page setup: Fit neatly on 1 A4 portrait page
   sheet.pageSetup = {
-    paperSize: 9, // A4
+    paperSize: 9,
     orientation: 'portrait',
     fitToPage: true,
     fitToWidth: 1,
-    fitToHeight: 1,
-    margins: { left: 0.5, right: 0.5, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 },
+    fitToHeight: 2,
+    margins: { left: 0.4, right: 0.4, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 },
   };
   sheet.views = [{ state: 'normal', showGridLines: true }];
 };
