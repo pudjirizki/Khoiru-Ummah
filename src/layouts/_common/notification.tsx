@@ -188,8 +188,8 @@ function RenderItems({
   }, []);
 
   const onReadNotification = useCallback(
-    async (id: string, currentStatus: boolean, formId: string) => {
-      if (!id || !formId) return;
+    async (id: string, currentStatus: boolean) => {
+      if (!id) return;
 
       try {
         if (!currentStatus) {
@@ -221,13 +221,13 @@ function RenderItems({
       <div ref={containerRef} className="max-h-[58vh] overflow-y-auto px-3 py-3" aria-label="List of notifications">
         <div className="space-y-2">
           {userNotifications.map((n) => {
-            const currentForm = formMap.get(n.formId);
+            const currentForm = n.formId ? formMap.get(n.formId) : undefined;
             const isUnread = !n.isRead;
 
             return (
               <Button
                 key={n.id}
-                onClick={() => onReadNotification(n.id, n.isRead, n.formId)}
+                onClick={() => onReadNotification(n.id, n.isRead)}
                 variant="gost"
                 className={twMerge(
                   'w-full rounded-2xl border border-transparent px-3 py-3 text-left font-normal transition-all duration-200 hover:border-primary-1/20 hover:bg-slate-50',
