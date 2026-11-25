@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 // supabase
 import { supabase } from '/src/supabase';
 import { subscribeToTableChanges } from '/src/supabase/realtime';
@@ -282,6 +283,7 @@ export const useDatabaseStudent = (): UseDatabaseStudentInterface => {
       }
 
       const { error } = await supabase.from('students').insert({
+        id: uuidv4(),
         name: payload.name,
         name_lowercase: payload.nameLowercase,
         class: payload.class,
